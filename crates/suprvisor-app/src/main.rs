@@ -1,11 +1,15 @@
-//! Suprvisor: a resident task manager. One process stays in the tray with its window hidden;
-//! running `suprvisor.exe` again only signals it to show (later, the Ctrl+Shift+Esc IFEO path).
-//!   suprvisor.exe          show (start the resident process if none runs)
-//!   suprvisor.exe --hide   hide
-//!   suprvisor.exe --exit   quit the resident process
+//! Suprvisor: a resident task manager. One process stays in the tray with its window hidden.
+//! Ctrl+Shift+Esc shows it (keyboard hook, hotkey.rs), and so does running suprvisor.exe again.
+//!   suprvisor.exe                 show (start the resident process if none runs)
+//!   suprvisor.exe --resident      start hidden (the logon task)
+//!   suprvisor.exe --hide          hide
+//!   suprvisor.exe --exit          quit the resident process
+//!   suprvisor.exe --ifeo ...      run by Windows in place of taskmgr.exe (ifeo.rs)
+//!   suprvisor.exe --real-taskmgr  start the real Task Manager (the fallback task)
 #![windows_subsystem = "windows"]
 
 mod hotkey;
+mod ifeo;
 mod render;
 mod settings;
 mod shell;
@@ -86,9 +90,16 @@ struct App {
 }
 
 fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let arg = args.first().map(String::as_str);
+    match arg {
+        Some("--ifeo") => return ifeo::redirect(&args[1..]),
+        Some("--real-taskmgr") => return ifeo::real_taskmgr(&args[1..]),
+        _ => {}
+    }
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
-    let arg = std::env::args().nth(1);
-    let msg = match arg.as_deref() {
+    let resident = arg == Some("--resident");
+    let msg = match arg {
         Some("--hide") => WM_APP_HIDE,
         Some("--exit") => WM_APP_EXIT,
         _ => WM_APP_SHOW,
@@ -96,6 +107,9 @@ fn main() -> Result<()> {
     // A resident instance exists: signal it and leave. This process got the user's input, so it may
     // pass the right to take the foreground to the resident one.
     if let Ok(existing) = unsafe { FindWindowW(CLASS, None) } {
+        if resident {
+            return Ok(());
+        }
         let mut pid = 0;
         unsafe { GetWindowThreadProcessId(existing, Some(&mut pid)) };
         let _ = unsafe { AllowSetForegroundWindow(pid) };
@@ -171,11 +185,18 @@ fn main() -> Result<()> {
     add_tray_icon(hwnd);
     spawn_collector(hwnd, data, wanted, signal_rx);
     hotkey::install(hwnd, WM_APP_HOTKEY);
-    if window.is_some_and(|(_, max)| max) {
-        let _ = unsafe { ShowWindow(hwnd, SW_SHOWMAXIMIZED) };
+    // The resident process runs elevated (logon task); suprvisor.exe started from Explorer, and the
+    // IFEO stub, do not. UIPI drops their messages unless allowed here.
+    for m in [WM_APP_SHOW, WM_APP_HIDE, WM_APP_EXIT] {
+        let _ = unsafe { ChangeWindowMessageFilterEx(hwnd, m, MSGFLT_ALLOW, None) };
     }
-    if let Some(a) = self::app(hwnd) {
-        a.show();
+    if !resident {
+        if window.is_some_and(|(_, max)| max) {
+            let _ = unsafe { ShowWindow(hwnd, SW_SHOWMAXIMIZED) };
+        }
+        if let Some(a) = self::app(hwnd) {
+            a.show();
+        }
     }
 
     let mut m = MSG::default();
