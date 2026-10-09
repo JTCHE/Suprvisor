@@ -2,18 +2,24 @@
 # Debugger value) and the tasks, and sends the program folder to the Recycle Bin.
 # Keeps the settings in %APPDATA%\suprvisor. Asks for elevation once (UAC).
 #   powershell -ExecutionPolicy Bypass -File uninstall.ps1
-param([switch]$Elevated)
+param([string]$Log, [switch]$Elevated)
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $dir = Join-Path $env:ProgramFiles 'Suprvisor'
 $exe = Join-Path $dir 'suprvisor.exe'
 $tasks = '\Suprvisor\'
 $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe'
 
 if (-not $Elevated) {
-    $p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Elevated'
+    # The elevated half runs without a window and reports through this file (see install.ps1).
+    $log = Join-Path $env:TEMP 'suprvisor-uninstall.log'
+    Set-Content $log ''
+    $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Elevated', '-Log', "`"$log`""
+    Get-Content $log
     exit $p.ExitCode
 }
 
+function Say($text) { Add-Content $Log $text }
 try {
     if (Test-Path $exe) { & $exe --exit; Start-Sleep -Milliseconds 500 }
 
@@ -29,10 +35,9 @@ try {
     Get-ScheduledTask -TaskPath $tasks -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
 
     if (Test-Path $dir) { trash $dir }
-    Write-Host 'Uninstalled. Ctrl+Shift+Esc opens Task Manager again.'
+    Say 'Uninstalled. Ctrl+Shift+Esc opens Task Manager again.'
 }
 catch {
-    Write-Host $_
-    Read-Host 'Uninstall failed. Press Enter'
+    Say "Uninstall failed: $_"
     exit 1
 }

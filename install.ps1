@@ -3,8 +3,9 @@
 # Undo everything with uninstall.ps1.
 # Run the Task Manager audit (audit/run.ps1) before installing: after this, taskmgr.exe opens Suprvisor.
 #   powershell -ExecutionPolicy Bypass -File install.ps1
-param([string]$User, [switch]$Elevated)
+param([string]$User, [string]$Log, [switch]$Elevated)
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $dir = Join-Path $env:ProgramFiles 'Suprvisor'
 $exe = Join-Path $dir 'suprvisor.exe'
 $tasks = '\Suprvisor\'
@@ -14,16 +15,23 @@ if (-not $Elevated) {
     cargo build -p suprvisor-app --release --manifest-path "$PSScriptRoot\Cargo.toml"
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
     $me = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $p = Start-Process powershell -Verb RunAs -Wait -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Elevated', '-User', "`"$me`""
+    # The elevated half runs without a window and reports through this file: a second console
+    # window can be paused by a click in it (Quick Edit), and it stayed open on failure.
+    $log = Join-Path $env:TEMP 'suprvisor-install.log'
+    Set-Content $log ''
+    $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Elevated', '-User', "`"$me`"", '-Log', "`"$log`""
+    Get-Content $log
     exit $p.ExitCode
 }
 
+function Say($text) { Add-Content $Log $text }
 try {
     # 1. The binary. Program Files is writable by admins only, so a normal process cannot replace
     #    the exe that the tasks and the IFEO redirect run elevated.
     if (Test-Path $exe) { & $exe --exit; Start-Sleep -Milliseconds 500 }
     New-Item -ItemType Directory -Force $dir | Out-Null
     Copy-Item "$PSScriptRoot\target\release\suprvisor.exe" $exe -Force
+    Say "Copied $exe"
 
     # 2. Two tasks that run elevated with no UAC prompt: the resident process at logon, and the real
     #    Task Manager on demand (the IFEO fallback when Suprvisor does not answer).
@@ -36,6 +44,7 @@ try {
         -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $User) | Out-Null
     Register-ScheduledTask -TaskPath $tasks -TaskName Taskmgr -Force -Principal $principal -Settings $settings `
         -Action (New-ScheduledTaskAction -Execute $exe -Argument '--real-taskmgr') | Out-Null
+    Say 'Registered the logon task'
 
     # 3. Every taskmgr.exe start runs `suprvisor.exe --ifeo` instead. Keep a Debugger value that
     #    another tool set (Process Explorer does this), so uninstall can restore it.
@@ -46,10 +55,9 @@ try {
     Set-ItemProperty $ifeo Debugger $ours
 
     Start-ScheduledTask -TaskPath $tasks -TaskName Resident
-    Write-Host "Installed $exe. Ctrl+Shift+Esc opens Suprvisor."
+    Say 'Installed. Ctrl+Shift+Esc opens Suprvisor.'
 }
 catch {
-    Write-Host $_
-    Read-Host 'Install failed. Press Enter'
+    Say "Install failed: $_"
     exit 1
 }

@@ -20,38 +20,89 @@ use crate::shell::Icon;
 use crate::table::{COLS, Col, Key, Row, Table};
 use crate::theme::Theme;
 
-/// Filter box and totals line.
-pub const TOP: f32 = 44.0;
-/// Column headers: total on the first line, name on the second.
-pub const HEAD: f32 = 48.0;
+// The window, like Task Manager: a title bar with the search box and a navigation pane on Mica,
+// around a solid content layer with the page header, the column headers and the rows.
+
+/// Title bar: app name, search box, caption buttons.
+pub const TITLE: f32 = 48.0;
+/// Page header in the content layer: page title, End task.
+const PAGE: f32 = 52.0;
+/// Top of the column headers.
+pub const TOP: f32 = TITLE + PAGE;
+/// Column headers: sort arrow, total, name.
+pub const HEAD: f32 = 52.0;
 pub const ROW: f32 = 28.0;
 pub const PAD: f32 = 12.0;
 /// Scroll bar strip at the right edge.
 pub const BAR: f32 = 12.0;
 const INDENT: f32 = 20.0;
+/// Caption button size, as in Windows 11.
+const CAPTION: (f32, f32) = (46.0, 32.0);
+/// Search box top and bottom.
+pub const SEARCH_Y: (f32, f32) = (8.0, 40.0);
+/// Navigation pane rows: the menu button, Processes, Performance.
+const NAV_TOP: f32 = TITLE + 4.0;
+const NAV_ROW: f32 = 40.0;
+
+/// Navigation pane width: icons only, or icons and labels.
+pub fn nav_width(open: bool) -> f32 {
+    if open { 200.0 } else { 48.0 }
+}
 
 /// Left and right edges of each column, in `COLS` order. Numeric columns are anchored right;
-/// Name takes the rest.
-pub fn columns(width: f32, widths: &[f32; 6]) -> [(f32, f32); 7] {
+/// Name takes the rest, from the content layer's left edge `x0`.
+pub fn columns(x0: f32, width: f32, widths: &[f32; 6]) -> [(f32, f32); 7] {
     let mut out = [(0.0, 0.0); 7];
     let mut x = width - PAD - BAR;
     for i in (0..6).rev() {
         out[i + 1] = (x - widths[i], x);
         x -= widths[i];
     }
-    out[0] = (PAD, x);
+    out[0] = (x0 + PAD, x);
     out
 }
 
-/// Tab labels in the top bar: label, left and right edge. The second is Performance.
-const TABS: [(&str, f32, f32); 2] = [("Processes", PAD + 256.0, PAD + 340.0), ("Performance", PAD + 348.0, PAD + 452.0)];
+/// Search box left and right edges: centered in the title bar, between the app name and the
+/// caption buttons.
+pub fn search(width: f32) -> (f32, f32) {
+    let w = (width - 140.0 - 3.0 * CAPTION.0 - 16.0).clamp(120.0, 412.0);
+    let l = ((width - w) / 2.0).max(140.0);
+    (l, l + w)
+}
 
-/// The tab under a point: Some(true) for Performance.
-pub fn tab_at(x: f32, y: f32) -> Option<bool> {
-    if !(7.0..37.0).contains(&y) {
+/// Width of the clear button at the search box's right end, shown while there is text.
+pub const CLEAR: f32 = 32.0;
+
+/// Caption button under a point: 0 minimize, 1 maximize, 2 close.
+pub fn caption_at(x: f32, y: f32, width: f32) -> Option<usize> {
+    let x0 = width - 3.0 * CAPTION.0;
+    (y < CAPTION.1 && x >= x0).then(|| (((x - x0) / CAPTION.0) as usize).min(2))
+}
+
+/// Navigation pane row under a point: 0 the menu button, 1 Processes, 2 Performance.
+pub fn nav_at(x: f32, y: f32, open: bool) -> Option<usize> {
+    if x >= nav_width(open) || y < NAV_TOP {
         return None;
     }
-    TABS.iter().position(|&(_, x0, x1)| (x0..x1).contains(&x)).map(|i| i == 1)
+    let k = ((y - NAV_TOP) / NAV_ROW) as usize;
+    (k < 3 && y - NAV_TOP - k as f32 * NAV_ROW < NAV_ROW - 4.0).then_some(k)
+}
+
+/// The End task button in the page header.
+pub fn end_task(width: f32) -> D2D_RECT_F {
+    rect(width - PAD - 108.0, TITLE + 10.0, width - PAD, TITLE + 42.0)
+}
+
+/// The element under the mouse, for hover states.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Hot {
+    None,
+    Header(Col),
+    Nav(usize),
+    Search,
+    SearchClear,
+    EndTask,
+    Caption(usize),
 }
 
 /// Rows that fit in a client area `height` DIPs tall.
@@ -72,16 +123,15 @@ pub fn thumb(height: f32, rows: usize, scroll: usize) -> Option<(f32, f32)> {
 }
 
 /// Left edge of a row's expand chevron. The icon follows 20 DIPs later, the label 24 after that.
-pub fn chevron_x(t: &Table, row: &Row, name_x0: f32) -> f32 {
-    let section = matches!(row.key, Key::Section(_));
-    let depth = if t.grouped && !section { row.depth.saturating_sub(1) } else { row.depth };
-    name_x0 + depth as f32 * INDENT
+/// Each level indents by one chevron, so a group's rows start under its label.
+pub fn chevron_x(row: &Row, name_x0: f32) -> f32 {
+    name_x0 + row.depth as f32 * INDENT
 }
 
 pub struct Renderer {
     factory: ID2D1Factory1,
     dwrite: IDWriteFactory,
-    formats: [IDWriteTextFormat; 7], // indexed by NAME, SECTION, ...
+    formats: [IDWriteTextFormat; 8], // indexed by NAME, SECTION, ...
     // Text layouts of this frame and the previous one. Shaping text is most of the paint time,
     // and most cells show the same text as one frame ago.
     layouts: HashMap<LayoutKey, IDWriteTextLayout>,
@@ -180,6 +230,7 @@ const HEAD_VALUE: usize = 3;
 const HEAD_LABEL: usize = 4;
 const HEAD_LABEL_LEFT: usize = 5;
 const GLYPH: usize = 6;
+const ICON: usize = 7; // navigation and button icons
 
 /// Format, box size in 1/4 DIPs, where the dimmed part starts, text.
 type LayoutKey = (usize, u32, u32, u32, String);
@@ -255,6 +306,31 @@ pub struct Frame<'a> {
     pub processes: usize,
     pub performance: bool,
     pub history: &'a VecDeque<System>,
+    pub nav_open: bool,
+    pub focus: bool, // the search box has the keyboard
+    pub hot: Hot,
+    pub can_end: bool, // a process or group is selected
+    pub maximized: bool,
+}
+
+/// The brushes of one frame.
+struct Brushes {
+    text: ID2D1SolidColorBrush,
+    dim: ID2D1SolidColorBrush,
+    strong: ID2D1SolidColorBrush, // control borders
+    off: ID2D1SolidColorBrush,    // disabled text
+    accent: ID2D1SolidColorBrush,
+    hover: ID2D1SolidColorBrush,
+    selected: ID2D1SolidColorBrush,
+    band: ID2D1SolidColorBrush, // the sorted column, under the rows
+    line: ID2D1SolidColorBrush,
+    layer: ID2D1SolidColorBrush,
+    close: ID2D1SolidColorBrush, // close button, hovered
+    white: ID2D1SolidColorBrush,
+}
+
+fn rounded(l: f32, t: f32, r: f32, b: f32, radius: f32) -> D2D1_ROUNDED_RECT {
+    D2D1_ROUNDED_RECT { rect: rect(l, t, r, b), radiusX: radius, radiusY: radius }
 }
 
 /// One Performance graph.
@@ -321,12 +397,13 @@ impl Renderer {
         Ok(Self {
             formats: [
                 format(&dwrite, text, 13.0, DWRITE_FONT_WEIGHT_NORMAL, lead)?,
-                format(&dwrite, text, 13.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, lead)?,
+                format(&dwrite, text, 14.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, lead)?,
                 format(&dwrite, text, 13.0, DWRITE_FONT_WEIGHT_NORMAL, trail)?,
                 format(&dwrite, text, 15.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, trail)?,
                 format(&dwrite, text, 12.0, DWRITE_FONT_WEIGHT_NORMAL, trail)?,
                 format(&dwrite, text, 12.0, DWRITE_FONT_WEIGHT_NORMAL, lead)?,
                 format(&dwrite, w!("Segoe Fluent Icons"), 10.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+                format(&dwrite, w!("Segoe Fluent Icons"), 16.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
             ],
             layouts: HashMap::new(),
             prev: HashMap::new(),
@@ -386,13 +463,13 @@ impl Renderer {
         }
     }
 
-    /// The Performance tab: a grid of 60 s graphs under the top bar.
-    #[allow(clippy::too_many_arguments)]
-    fn performance(&mut self, t: &ID2D1DeviceContext, size: D2D_SIZE_F, f: &Frame, text: &ID2D1SolidColorBrush, dim: &ID2D1SolidColorBrush, accent: &ID2D1SolidColorBrush, tile: &ID2D1SolidColorBrush, line: &ID2D1SolidColorBrush) -> Result<()> {
+    /// The Performance tab: a grid of 60 s graphs under the page header.
+    fn performance(&mut self, t: &ID2D1DeviceContext, size: D2D_SIZE_F, f: &Frame, b: &Brushes) -> Result<()> {
         const GAP: f32 = 12.0;
+        let (text, dim, accent, tile, line) = (&b.text, &b.dim, &b.accent, &b.hover, &b.line);
         let fill = unsafe { t.CreateSolidColorBrush(&color(0, 0.0), None)? };
         unsafe { fill.SetColor(&{ let mut c = accent.GetColor(); c.a = 0.2; c }) };
-        let (x0, y0, x1, y1) = (PAD, TOP + 4.0, size.width - PAD, size.height - PAD);
+        let (x0, y0, x1, y1) = (nav_width(f.nav_open) + PAD, TOP + PAD, size.width - PAD, size.height - PAD);
         let cols = if x1 - x0 >= 900.0 { 3 } else if x1 - x0 >= 560.0 { 2 } else { 1 };
         let rows = 6usize.div_ceil(cols);
         let w = (x1 - x0 - GAP * (cols - 1) as f32) / cols as f32;
@@ -448,81 +525,154 @@ impl Renderer {
 
     /// Draws `s` in `r`; from UTF-16 index `dim.0` on, in the `dim.1` brush.
     fn text_dim(&mut self, t: &ID2D1DeviceContext, s: &str, f: usize, r: D2D_RECT_F, b: &ID2D1SolidColorBrush, dim: Option<(u32, &ID2D1SolidColorBrush)>) {
+        if let Some(layout) = self.layout(s, f, r, dim) {
+            unsafe { t.DrawTextLayout(windows_numerics::Vector2 { X: r.left, Y: r.top }, &layout, b, D2D1_DRAW_TEXT_OPTIONS_CLIP) };
+        }
+    }
+
+    /// The layout of `s` in `r`, from this frame's or the previous frame's cache.
+    fn layout(&mut self, s: &str, f: usize, r: D2D_RECT_F, dim: Option<(u32, &ID2D1SolidColorBrush)>) -> Option<IDWriteTextLayout> {
         let (w, h) = ((r.right - r.left).max(0.0), (r.bottom - r.top).max(0.0));
         let key = (f, (w * 4.0) as u32, (h * 4.0) as u32, dim.map_or(u32::MAX, |d| d.0), s.to_owned());
         let layout = match self.prev.remove(&key).or_else(|| self.layouts.get(&key).cloned()) {
             Some(l) => l,
             None => {
-                let Ok(l) = (unsafe { self.dwrite.CreateTextLayout(&utf16(s), &self.formats[f], w, h) }) else { return };
+                let l = unsafe { self.dwrite.CreateTextLayout(&utf16(s), &self.formats[f], w, h) }.ok()?;
                 if let Some((start, brush)) = dim {
                     let _ = unsafe { l.SetDrawingEffect(brush, DWRITE_TEXT_RANGE { startPosition: start, length: u32::MAX - start }) };
                 }
                 l
             }
         };
-        unsafe { t.DrawTextLayout(windows_numerics::Vector2 { X: r.left, Y: r.top }, &layout, b, D2D1_DRAW_TEXT_OPTIONS_CLIP) };
-        self.layouts.insert(key, layout);
+        self.layouts.insert(key, layout.clone());
+        Some(layout)
+    }
+
+    /// Title bar, navigation pane, content layer and page header.
+    fn chrome(&mut self, t: &ID2D1DeviceContext, size: D2D_SIZE_F, f: &Frame, b: &Brushes) {
+        let (w, h) = (size.width, size.height);
+        let cl = nav_width(f.nav_open);
+        unsafe {
+            // Content layer: solid, rounded at its top-left corner. Its other corners are off screen.
+            t.FillRoundedRectangle(&rounded(cl, TITLE, w + 8.0, h + 8.0, 8.0), &b.layer);
+            t.DrawRoundedRectangle(&rounded(cl + 0.5, TITLE + 0.5, w + 8.0, h + 8.0, 8.0), &b.line, 1.0, None);
+
+            // Title bar.
+            self.text(t, "\u{E9D9}", ICON, rect(12.0, 0.0, 36.0, TITLE), &b.accent);
+            self.text(t, "Suprvisor", HEAD_LABEL_LEFT, rect(44.0, 0.0, 140.0, TITLE), &b.text);
+            let (sl, sr) = search(w);
+            let (st, sb) = SEARCH_Y;
+            // Fluent text box: lighter on hover; on focus, the layer color and an accent underline.
+            let fill = if f.focus { &b.layer } else if matches!(f.hot, Hot::Search | Hot::SearchClear) { &b.selected } else { &b.hover };
+            t.FillRoundedRectangle(&rounded(sl, st, sr, sb, 4.0), fill);
+            t.DrawRoundedRectangle(&rounded(sl + 0.5, st + 0.5, sr - 0.5, sb - 0.5, 4.0), &b.line, 1.0, None);
+            let under = if f.focus { 2.0 } else { 1.0 };
+            t.FillRectangle(&rect(sl + 3.0, sb - under, sr - 3.0, sb), if f.focus { &b.accent } else { &b.strong });
+            self.text(t, "\u{E721}", GLYPH, rect(sl + 8.0, st, sl + 28.0, sb), &b.dim);
+            let filter = f.table.filter.as_str();
+            let tr = rect(sl + 34.0, st, sr - if filter.is_empty() { 10.0 } else { CLEAR + 4.0 }, sb);
+            if filter.is_empty() {
+                self.text(t, "Type a name, window title, or PID to filter", NAME, tr, &b.dim);
+            } else {
+                self.text(t, filter, NAME, tr, &b.text);
+                let r = rect(sr - CLEAR, st + 4.0, sr - 4.0, sb - 4.0);
+                if f.hot == Hot::SearchClear {
+                    t.FillRoundedRectangle(&rounded(r.left, r.top, r.right, r.bottom, 3.0), &b.hover);
+                }
+                self.text(t, "\u{E894}", GLYPH, r, &b.dim);
+            }
+            if f.focus {
+                let mut m = DWRITE_TEXT_METRICS::default();
+                let width = self.layout(filter, NAME, tr, None).and_then(|l| l.GetMetrics(&mut m).ok()).map_or(0.0, |_| m.widthIncludingTrailingWhitespace);
+                let x = (tr.left + width).min(tr.right).round() + 0.5;
+                t.DrawLine(windows_numerics::Vector2 { X: x, Y: st + 8.0 }, windows_numerics::Vector2 { X: x, Y: sb - 8.0 }, &b.text, 1.0, None);
+            }
+            let x0 = w - 3.0 * CAPTION.0;
+            for k in 0..3 {
+                let r = rect(x0 + k as f32 * CAPTION.0, 0.0, x0 + (k + 1) as f32 * CAPTION.0, CAPTION.1);
+                let hot = f.hot == Hot::Caption(k);
+                if hot {
+                    t.FillRectangle(&r, if k == 2 { &b.close } else { &b.hover });
+                }
+                let glyph = ["\u{E921}", if f.maximized { "\u{E923}" } else { "\u{E922}" }, "\u{E8BB}"][k];
+                self.text(t, glyph, GLYPH, r, if hot && k == 2 { &b.white } else { &b.text });
+            }
+
+            // Navigation pane.
+            for (k, (glyph, label)) in [("\u{E700}", ""), ("\u{E71D}", "Processes"), ("\u{E9D9}", "Performance")].into_iter().enumerate() {
+                let top = NAV_TOP + k as f32 * NAV_ROW;
+                let (l, r, bot) = (4.0, cl - 4.0, top + NAV_ROW - 4.0);
+                let on = k > 0 && (k == 2) == f.performance;
+                if on {
+                    t.FillRoundedRectangle(&rounded(l, top, r, bot, 4.0), &b.selected);
+                    let cy = (top + bot) / 2.0;
+                    t.FillRoundedRectangle(&rounded(l, cy - 8.0, l + 3.0, cy + 8.0, 1.5), &b.accent);
+                } else if f.hot == Hot::Nav(k) {
+                    t.FillRoundedRectangle(&rounded(l, top, r, bot, 4.0), &b.hover);
+                }
+                self.text(t, glyph, ICON, rect(l, top, l + 40.0, bot), &b.text);
+                if f.nav_open {
+                    self.text(t, label, NAME, rect(l + 44.0, top, r - 8.0, bot), &b.text);
+                }
+            }
+
+            // Page header.
+            let x = cl + PAD + 4.0;
+            self.text(t, if f.performance { "Performance" } else { "Processes" }, SECTION, rect(x, TITLE, x + 160.0, TOP), &b.text);
+            if !f.performance {
+                self.text(t, &format!("{} processes", f.processes), NAME, rect(x + 96.0, TITLE, x + 260.0, TOP), &b.dim);
+                let r = end_task(w);
+                if f.can_end && f.hot == Hot::EndTask {
+                    t.FillRoundedRectangle(&rounded(r.left, r.top, r.right, r.bottom, 4.0), &b.hover);
+                }
+                let fg = if f.can_end { &b.text } else { &b.off };
+                self.text(t, "\u{E733}", ICON, rect(r.left + 4.0, r.top, r.left + 32.0, r.bottom), fg);
+                self.text(t, "End task", NAME, rect(r.left + 36.0, r.top, r.right - 8.0, r.bottom), fg);
+            }
+            t.FillRectangle(&rect(cl + 1.0, TOP - 1.0, w, TOP), &b.line);
+        }
     }
 
     pub fn paint(&mut self, hwnd: HWND, dpi: u32, theme: &Theme, f: &Frame) -> Result<()> {
         let t = self.target(hwnd, dpi)?;
         let size = unsafe { t.GetSize() };
-        let (fg, dim) = (theme.text, theme.text_secondary);
+        let dim = theme.text_secondary;
         let brush = |c: u32, a: f32| unsafe { t.CreateSolidColorBrush(&color(c, a), None) };
-        let text = brush(fg, 1.0)?;
-        let dim_b = brush(dim, 1.0)?;
-        let accent = brush(theme.accent, 1.0)?;
         let wash = if theme.dark { 0xFFFFFF } else { 0x000000 };
-        let hover = brush(wash, if theme.dark { 0.06 } else { 0.04 })?;
-        let selected = brush(wash, if theme.dark { 0.09 } else { 0.06 })?;
-        let line = brush(dim, 0.25)?;
+        let b = Brushes {
+            text: brush(theme.text, 1.0)?,
+            dim: brush(dim, 1.0)?,
+            strong: brush(dim, 0.55)?,
+            off: brush(dim, 0.45)?,
+            accent: brush(theme.accent, 1.0)?,
+            hover: brush(wash, if theme.dark { 0.06 } else { 0.04 })?,
+            selected: brush(wash, if theme.dark { 0.09 } else { 0.06 })?,
+            band: brush(wash, if theme.dark { 0.03 } else { 0.02 })?,
+            line: brush(dim, 0.25)?,
+            layer: brush(theme.layer, 1.0)?,
+            close: brush(0xC42B1C, 1.0)?,
+            white: brush(0xFFFFFF, 1.0)?,
+        };
+        let (text, dim_b, accent, hover, selected, line) = (&b.text, &b.dim, &b.accent, &b.hover, &b.selected, &b.line);
         if self.dim != dim {
             (self.dim, self.layouts, self.prev) = (dim, HashMap::new(), HashMap::new()); // theme changed
         }
         let tb = f.table;
-        let cols = columns(size.width, f.widths);
+        let cols = columns(nav_width(f.nav_open), size.width, f.widths);
 
         unsafe {
             t.BeginDraw();
             t.Clear(Some(&color(0, 0.0))); // Mica shows through
-
-            // Filter box, then exact totals.
-            let r = D2D1_ROUNDED_RECT { rect: rect(PAD, 7.0, PAD + 240.0, 37.0), radiusX: 4.0, radiusY: 4.0 };
-            t.FillRoundedRectangle(&r, &hover);
-            t.DrawRoundedRectangle(&r, if tb.filter.is_empty() { &line } else { &accent }, 1.0, None);
-            self.text(&t, "\u{E721}", GLYPH, rect(PAD + 4.0, 7.0, PAD + 28.0, 37.0), &dim_b);
-            let (q, qb) = if tb.filter.is_empty() { ("Type to filter", &dim_b) } else { (tb.filter.as_str(), &text) };
-            self.text(&t, q, NAME, rect(PAD + 30.0, 7.0, PAD + 232.0, 37.0), qb);
-            let s = f.system;
-            let totals = format!(
-                "CPU {}  ·  Memory {:.1} / {:.0} GB  ·  GPU {}  ·  VRAM {:.1} / {:.0} GB  ·  Disk {} MB/s  ·  Network {} MB/s  ·  {} processes",
-                pct(s.cpu),
-                gb(s.ram_used),
-                gb(s.ram_total),
-                pct(s.gpu),
-                gb(s.vram_used),
-                gb(s.vram_total),
-                mbs(s.disk_read + s.disk_write),
-                mbs(s.net_recv + s.net_sent),
-                f.processes,
-            );
-            self.text(&t, &totals, NUM, rect(TABS[1].2 + 16.0, 7.0, size.width - PAD, 37.0), &dim_b);
-            for (k, &(label, x0, x1)) in TABS.iter().enumerate() {
-                let on = (k == 1) == f.performance;
-                self.text(&t, label, if on { SECTION } else { NAME }, rect(x0 + 8.0, 7.0, x1, 37.0), if on { &text } else { &dim_b });
-                if on {
-                    let pill = D2D1_ROUNDED_RECT { rect: rect(x0 + 8.0, 34.0, x0 + 24.0, 37.0), radiusX: 1.5, radiusY: 1.5 };
-                    t.FillRoundedRectangle(&pill, &accent);
-                }
-            }
+            self.chrome(&t, size, f, &b);
             if f.performance {
-                self.performance(&t, size, f, &text, &dim_b, &accent, &hover, &line)?;
+                self.performance(&t, size, f, &b)?;
                 return self.present(&t);
             }
 
-            // Column headers: headroom total on top, name under it.
+            // Column headers: sort arrow on top, then the machine total, then the name.
+            let s = f.system;
             let share = |used: u64, total: u64| if total > 0 { format!("{:.0}%", used as f64 * 100.0 / total as f64) } else { String::new() };
-            for (c, &(x0, x1)) in COLS.iter().zip(&cols) {
+            for (i, (c, &(x0, x1))) in COLS.iter().zip(&cols).enumerate() {
                 let (value, label) = match c {
                     Col::Name => (String::new(), "Name"),
                     Col::Pid => (String::new(), "PID"),
@@ -532,45 +682,57 @@ impl Renderer {
                     Col::Vram => (share(s.vram_used, s.vram_total), "VRAM"),
                     Col::Disk => (format!("{} MB/s", mbs(s.disk_read + s.disk_write)), "Disk r / w"),
                 };
-                let (l, r) = (x0 + 8.0, x1 - 8.0);
-                self.text(&t, &value, HEAD_VALUE, rect(l, TOP + 2.0, r, TOP + 26.0), &text);
+                // The sorted column: filled header, full-contrast total, a band down the rows.
+                // The other totals are dimmed, so the sorted one reads first.
                 let sorted = tb.sort == *c;
+                if sorted {
+                    t.FillRectangle(&rect(x0, TOP, x1, size.height), &b.band);
+                }
+                if sorted || f.hot == Hot::Header(*c) {
+                    t.FillRectangle(&rect(x0, TOP, x1, TOP + HEAD), if sorted && f.hot == Hot::Header(*c) { selected } else { hover });
+                }
+                if i > 0 {
+                    t.FillRectangle(&rect(x0, TOP + 8.0, x0 + 1.0, TOP + HEAD - 8.0), line);
+                }
+                let (l, r) = (x0 + 8.0, x1 - 8.0);
+                self.text(&t, &value, HEAD_VALUE, rect(l, TOP + 10.0, r, TOP + 32.0), if sorted { text } else { dim_b });
                 let fmt = if *c == Col::Name { HEAD_LABEL_LEFT } else { HEAD_LABEL };
-                // Sorted: the arrow goes right of the label, so a right-aligned label moves left.
-                let r_label = if sorted && *c != Col::Name { r - 14.0 } else { r };
-                self.text(&t, label, fmt, rect(l, TOP + 26.0, r_label, TOP + HEAD - 4.0), if sorted { &accent } else { &dim_b });
+                self.text(&t, label, fmt, rect(l, TOP + 32.0, r, TOP + HEAD - 4.0), if sorted { text } else { dim_b });
                 if sorted {
                     let g = if tb.desc { "\u{E70D}" } else { "\u{E70E}" };
-                    let gx = if *c == Col::Name { l + 44.0 } else { r - 5.0 };
-                    self.text(&t, g, GLYPH, rect(gx - 8.0, TOP + 26.0, gx + 8.0, TOP + HEAD - 4.0), &accent);
+                    let cx = (x0 + x1) / 2.0;
+                    self.text(&t, g, GLYPH, rect(cx - 8.0, TOP, cx + 8.0, TOP + 12.0), dim_b);
                 }
             }
-            t.FillRectangle(&rect(PAD, TOP + HEAD - 1.0, size.width - PAD, TOP + HEAD), &line);
+            t.FillRectangle(&rect(cols[0].0, TOP + HEAD - 1.0, size.width - PAD, TOP + HEAD), line);
 
             // Rows.
             let top = TOP + HEAD;
+            if tb.rows.is_empty() && !tb.filter.is_empty() {
+                self.text(&t, &format!("No process matches \u{201C}{}\u{201D}", tb.filter), NAME, rect(cols[0].0 + 8.0, top + 8.0, size.width - PAD, top + 8.0 + ROW), dim_b);
+            }
             t.PushAxisAlignedClip(&rect(0.0, top, size.width, size.height), D2D1_ANTIALIAS_MODE_ALIASED);
             let sel = tb.selected_index();
             let (name_x0, name_x1) = cols[0];
             for (i, row) in tb.rows.iter().enumerate().skip(tb.scroll).take(rows_visible(size.height) + 1) {
                 let y = top + (i - tb.scroll) as f32 * ROW;
-                let band = D2D1_ROUNDED_RECT { rect: rect(PAD - 4.0, y + 1.0, size.width - PAD - BAR + 4.0, y + ROW - 1.0), radiusX: 4.0, radiusY: 4.0 };
+                let band = D2D1_ROUNDED_RECT { rect: rect(name_x0 - 4.0, y + 1.0, size.width - PAD - BAR + 4.0, y + ROW - 1.0), radiusX: 4.0, radiusY: 4.0 };
                 if sel == Some(i) {
-                    t.FillRoundedRectangle(&band, &selected);
-                    let pill = D2D1_ROUNDED_RECT { rect: rect(PAD - 4.0, y + 8.0, PAD - 1.0, y + ROW - 8.0), radiusX: 1.5, radiusY: 1.5 };
-                    t.FillRoundedRectangle(&pill, &accent);
+                    t.FillRoundedRectangle(&band, selected);
+                    let pill = D2D1_ROUNDED_RECT { rect: rect(name_x0 - 4.0, y + 8.0, name_x0 - 1.0, y + ROW - 8.0), radiusX: 1.5, radiusY: 1.5 };
+                    t.FillRoundedRectangle(&pill, accent);
                 } else if tb.hover == Some(i) {
-                    t.FillRoundedRectangle(&band, &hover);
+                    t.FillRoundedRectangle(&band, hover);
                 }
                 let is_section = matches!(row.key, Key::Section(_));
-                let mut x = chevron_x(tb, row, name_x0);
+                let mut x = chevron_x(row, name_x0);
                 if row.expandable {
                     let g = if row.expanded { "\u{E70D}" } else { "\u{E76C}" };
-                    self.text(&t, g, GLYPH, rect(x, y, x + 16.0, y + ROW), &dim_b);
+                    self.text(&t, g, GLYPH, rect(x, y, x + 16.0, y + ROW), dim_b);
                 }
                 x += 20.0;
                 if is_section {
-                    self.text(&t, &format!("{} {}", row.label, row.detail), SECTION, rect(x, y, name_x1 - 8.0, y + ROW), &text);
+                    self.text(&t, &format!("{} {}", row.label, row.detail), SECTION, rect(x, y, name_x1 - 8.0, y + ROW), text);
                     continue;
                 }
                 let path = row.rep.map(|p| tb.procs[p].path.as_str()).unwrap_or("");
@@ -578,7 +740,7 @@ impl Renderer {
                     Some(b) => t.DrawBitmap(&b, Some(&rect(x, y + 6.0, x + 16.0, y + 22.0)), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None),
                     None => t.DrawRoundedRectangle(
                         &D2D1_ROUNDED_RECT { rect: rect(x + 2.5, y + 8.5, x + 13.5, y + 19.5), radiusX: 2.0, radiusY: 2.0 },
-                        &line,
+                        line,
                         1.0,
                         None,
                     ),
@@ -587,10 +749,9 @@ impl Renderer {
                 // Label, then the detail (window title or member count) dimmed.
                 let s = if row.detail.is_empty() { row.label.clone() } else { format!("{}  {}", row.label, row.detail) };
                 let start = row.label.encode_utf16().count() as u32;
-                self.text_dim(&t, &s, NAME, rect(x, y, name_x1 - 8.0, y + ROW), &text, Some((start, &dim_b)));
+                self.text_dim(&t, &s, NAME, rect(x, y, name_x1 - 8.0, y + ROW), text, Some((start, dim_b)));
                 let v = &row.v;
                 let cells = [
-                    row.pid.map(|p| p.to_string()).unwrap_or_default(),
                     pct(v.cpu),
                     bytes(v.ram),
                     pct(v.gpu),
@@ -599,15 +760,16 @@ impl Renderer {
                         (r, w) if r == "0" && w == "0" => "0 MB/s".into(),
                         (r, w) => format!("{r} / {w} MB/s"),
                     },
+                    row.pid.map(|p| p.to_string()).unwrap_or_default(),
                 ];
                 for (s, &(x0, x1)) in cells.iter().zip(&cols[1..]) {
-                    self.text(&t, s, NUM, rect(x0 + 8.0, y, x1 - 8.0, y + ROW), &text);
+                    self.text(&t, s, NUM, rect(x0 + 8.0, y, x1 - 8.0, y + ROW), text);
                 }
             }
             if let Some((y0, y1)) = thumb(size.height, tb.rows.len(), tb.scroll) {
                 let x = size.width - BAR / 2.0;
                 let r = D2D1_ROUNDED_RECT { rect: rect(x - 1.5, y0 + 2.0, x + 1.5, y1 - 2.0), radiusX: 1.5, radiusY: 1.5 };
-                t.FillRoundedRectangle(&r, &dim_b);
+                t.FillRoundedRectangle(&r, dim_b);
             }
             t.PopAxisAlignedClip();
 

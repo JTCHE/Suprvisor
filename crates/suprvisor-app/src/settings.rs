@@ -10,7 +10,9 @@ pub struct Settings {
     pub grouped: bool,
     /// The Performance tab is open (else Processes).
     pub performance: bool,
-    /// Widths in DIPs of the columns after Name (PID, CPU, RAM, GPU, VRAM, Disk). Name takes the rest.
+    /// The navigation pane shows labels (else icons only).
+    pub nav: bool,
+    /// Widths in DIPs of the columns after Name (CPU, RAM, GPU, VRAM, Disk, PID). Name takes the rest.
     pub widths: [f32; 6],
     /// Normal (restored) window rect in pixels, and whether the window was maximized.
     pub window: Option<([i32; 4], bool)>,
@@ -18,7 +20,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { sort: Col::Name, desc: false, grouped: true, performance: false, widths: [64.0, 72.0, 96.0, 64.0, 96.0, 128.0], window: None }
+        Self { sort: Col::Name, desc: false, grouped: true, performance: false, nav: false, widths: [72.0, 96.0, 64.0, 96.0, 128.0, 64.0], window: None }
     }
 }
 
@@ -42,7 +44,9 @@ impl Settings {
                 "desc" => s.desc = v.trim() == "1",
                 "grouped" => s.grouped = v.trim() != "0",
                 "tab" => s.performance = v.trim() == "performance",
-                "widths" => s.widths = nums(v).unwrap_or(s.widths).map(|w: f32| w.clamp(32.0, 600.0)),
+                "nav" => s.nav = v.trim() == "open",
+                // "widths" held the old column order (PID first): ignored.
+                "columns" => s.widths = nums(v).unwrap_or(s.widths).map(|w: f32| w.clamp(32.0, 600.0)),
                 "window" => s.window = nums::<i32, 5>(v).map(|[l, t, r, b, max]| ([l, t, r, b], max != 0)),
                 _ => {}
             }
@@ -54,7 +58,8 @@ impl Settings {
         let Some(f) = file() else { return };
         let w = self.widths.map(|w| w.round().to_string()).join(",");
         let tab = if self.performance { "performance" } else { "processes" };
-        let mut text = format!("sort={}\ndesc={}\ngrouped={}\ntab={tab}\nwidths={w}\n", self.sort.id(), self.desc as u8, self.grouped as u8);
+        let nav = if self.nav { "open" } else { "closed" };
+        let mut text = format!("sort={}\ndesc={}\ngrouped={}\ntab={tab}\nnav={nav}\ncolumns={w}\n", self.sort.id(), self.desc as u8, self.grouped as u8);
         if let Some(([l, t, r, b], max)) = self.window {
             text += &format!("window={l},{t},{r},{b},{}\n", max as u8);
         }

@@ -20,11 +20,14 @@ the taskbar menu and the Run box go through the redirect. If Suprvisor does not 
 200 ms, the real Task Manager opens. `uninstall.ps1` returns Windows to stock.
 
 ## Use
-Type to filter (name, window title or PID); Esc clears, then hides. Click a header to sort.
+The window follows Task Manager: search box in the title bar, pages in the navigation pane on the
+left (the menu button shows their names), a solid content layer on Mica.
+Type anywhere or Ctrl+F to filter (name, window title or PID); Esc or the × clears, then Esc hides.
+Click a header to sort; the sorted column is shaded. End task in the page header acts on the selection.
 Arrows, Home/End, PgUp/PgDn move; Right/Left/Enter open and close groups. Del ends the task
 (a group: all its processes). Right-click: end, open file location, copy path or command line.
 Right-click a header: group by type on/off. X and Esc hide to the tray; exit from the tray menu.
-Ctrl+Tab or the tabs in the top bar switch to Performance: 60 s graphs of CPU, memory, GPU, VRAM,
+Ctrl+Tab or the navigation pane switch to Performance: 60 s graphs of CPU, memory, GPU, VRAM,
 disk and network. The hidden app samples these once per second, so the graphs have history when
 the window opens. Disk throughput needs admin (the installed app always has it).
 

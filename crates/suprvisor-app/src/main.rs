@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use suprvisor_core::{Collector, Proc, System};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::*;
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT, UpdateWindow};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT, ScreenToClient, UpdateWindow};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::Controls::{MARGINS, WM_MOUSELEAVE};
@@ -34,7 +34,7 @@ use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
-use render::{BAR, HEAD, ROW, TOP};
+use render::{BAR, HEAD, Hot, ROW, SEARCH_Y, TITLE, TOP};
 use table::{COLS, Key, Table};
 
 const CLASS: PCWSTR = w!("Suprvisor");
@@ -86,6 +86,10 @@ struct App {
     table: Table,
     settings: settings::Settings,
     performance: bool, // the Performance tab is open
+    nav_open: bool,    // the navigation pane shows labels
+    focus: bool,       // the search box shows the keyboard focus: typing anywhere filters
+    hot: Hot,
+    caption_down: u32, // caption button pressed (HTCLOSE...), 0 for none
     drag: Drag,
     taskbar_created: u32,
     shown: bool,
@@ -153,6 +157,10 @@ fn main() -> Result<()> {
         snap: Snapshot::default(),
         table: Table::new(settings.sort, settings.desc, settings.grouped),
         performance: settings.performance,
+        nav_open: settings.nav,
+        focus: false,
+        hot: Hot::None,
+        caption_down: 0,
         settings,
         drag: Drag::None,
         taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
@@ -186,6 +194,8 @@ fn main() -> Result<()> {
         let _ = unsafe { SetWindowPlacement(hwnd, &p) };
     }
     style_window(hwnd, theme::Theme::current().dark);
+    // WM_NCCALCSIZE at creation does not size the client area: ask again, so the title bar goes.
+    let _ = unsafe { SetWindowPos(hwnd, None, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE) };
     add_tray_icon(hwnd);
     spawn_collector(hwnd, data, wanted, signal_rx, !performance);
     hotkey::install(hwnd, WM_APP_HOTKEY);
@@ -218,6 +228,8 @@ fn main() -> Result<()> {
 /// screen: totals every 500 ms, and every 500 ms the processes
 /// under the visible rows; every 3 s the process list, window titles, new icons; every 60 s the
 /// kernel list (per-process disk I/O). See suprvisor-core.
+/// Once at start, hidden or not, the full list and every icon (~1-2 s of work): the first show then
+/// has rows at once, and its fresh list (the quick handle scan, ~20 ms) follows.
 fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec<(u32, i64)>>>, signal: mpsc::Receiver<Signal>, table: bool) {
     const SCAN: Duration = Duration::from_secs(3);
     const FULL: Duration = Duration::from_secs(60);
@@ -234,18 +246,19 @@ fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec
         let mut tried: HashSet<String> = HashSet::new();
         let mut history: VecDeque<System> = VecDeque::with_capacity(HISTORY);
         let (mut shown, mut table, mut tick) = (false, table, 0u64);
+        let (mut primed, mut quick) = (false, false); // quick: the next list skips the kernel list
         let (mut scanned, mut full, mut engines, mut sampled): (Option<Instant>, Option<Instant>, Option<Instant>, Option<Instant>) = (None, None, None, None);
         loop {
             match signal.recv_timeout(Duration::from_millis(if shown && table { 500 } else { 1000 })) {
                 Ok(Signal::Visible(v)) => {
                     if v && !shown {
-                        scanned = None; // the list is stale after a hidden period
+                        (scanned, quick) = (None, true); // the list is stale after a hidden period
                     }
                     shown = v;
                 }
                 Ok(Signal::Table(t)) => {
                     if t && !table {
-                        scanned = None; // not listed while the Performance tab was open
+                        (scanned, quick) = (None, true); // not listed while the Performance tab was open
                     }
                     table = t;
                 }
@@ -253,11 +266,12 @@ fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
-            let listing = shown && table;
+            let listing = (shown && table) || !primed;
             tick += 1;
             if !listing {
             } else if scanned.is_none_or(|t| t.elapsed() >= SCAN) {
-                procs = if full.is_none_or(|t| t.elapsed() >= FULL) {
+                let quick = std::mem::take(&mut quick) && primed;
+                procs = if !quick && full.is_none_or(|t| t.elapsed() >= FULL) {
                     full = Some(Instant::now());
                     c.scan_full().unwrap_or_else(|_| c.scan())
                 } else {
@@ -306,7 +320,7 @@ fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec
                 snap.procs = Arc::new(procs.clone());
             }
             *data.lock().unwrap() = snap.clone();
-            if shown {
+            if shown || !std::mem::replace(&mut primed, true) {
                 let _ = unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP_DATA, WPARAM(0), LPARAM(0)) };
             }
         }
@@ -359,6 +373,17 @@ fn invalidate(hwnd: HWND) {
     let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
+/// Resize border height in pixels: the part of the title bar that resizes the window.
+fn frame(hwnd: HWND) -> i32 {
+    let d = dpi(hwnd);
+    unsafe { GetSystemMetricsForDpi(SM_CYFRAME, d) + GetSystemMetricsForDpi(SM_CXPADDEDBORDER, d) }
+}
+
+/// The caption button of a non-client hit code.
+fn caption(wp: WPARAM) -> Option<usize> {
+    [HTMINBUTTON, HTMAXBUTTON, HTCLOSE].iter().position(|&h| h == wp.0 as u32)
+}
+
 fn ctrl() -> bool {
     (unsafe { GetKeyState(VK_CONTROL.0 as i32) }) < 0
 }
@@ -370,7 +395,12 @@ enum Hit {
     Row(usize, bool), // row, on its chevron
     Thumb,
     Track,
-    Tab(bool), // true: Performance
+    Nav(usize),     // 0 the menu button, 1 Processes, 2 Performance
+    Search,
+    SearchClear,
+    EndTask,
+    Caption(usize), // 0 minimize, 1 maximize, 2 close
+    Title,          // empty title bar: drags the window
 }
 
 impl App {
@@ -393,13 +423,29 @@ impl App {
     }
 
     fn hit(&self, x: f32, y: f32) -> Hit {
-        if let Some(p) = render::tab_at(x, y) {
-            return Hit::Tab(p);
+        let (w, h) = self.size();
+        if y < TITLE {
+            if let Some(k) = render::caption_at(x, y, w) {
+                return Hit::Caption(k);
+            }
+            let (l, r) = render::search(w);
+            return match (l..r).contains(&x) && (SEARCH_Y.0..SEARCH_Y.1).contains(&y) {
+                true if !self.table.filter.is_empty() && x >= r - render::CLEAR => Hit::SearchClear,
+                true => Hit::Search,
+                false => Hit::Title,
+            };
         }
-        if self.performance {
+        if let Some(k) = render::nav_at(x, y, self.nav_open) {
+            return Hit::Nav(k);
+        }
+        let cl = render::nav_width(self.nav_open);
+        if x < cl || self.performance {
             return Hit::None;
         }
-        let (w, h) = self.size();
+        if y < TOP {
+            let r = render::end_task(w);
+            return if (r.left..r.right).contains(&x) && (r.top..r.bottom).contains(&y) { Hit::EndTask } else { Hit::None };
+        }
         let rows_top = TOP + HEAD;
         if x >= w - BAR && y >= rows_top {
             return match render::thumb(h, self.table.rows.len(), self.table.scroll) {
@@ -408,7 +454,7 @@ impl App {
                 None => Hit::None,
             };
         }
-        let cols = render::columns(w, &self.settings.widths);
+        let cols = render::columns(cl, w, &self.settings.widths);
         if (TOP..rows_top).contains(&y) {
             if let Some(i) = (1..7).find(|&i| (x - cols[i].0).abs() <= 4.0) {
                 return Hit::Edge(i - 1);
@@ -418,7 +464,7 @@ impl App {
         if y >= rows_top {
             let i = self.table.scroll + ((y - rows_top) / ROW) as usize;
             if let Some(row) = self.table.rows.get(i) {
-                let cx = render::chevron_x(&self.table, row, cols[0].0);
+                let cx = render::chevron_x(row, cols[0].0);
                 return Hit::Row(i, row.expandable && (cx - 2.0..cx + 18.0).contains(&x));
             }
         }
@@ -432,6 +478,25 @@ impl App {
         let s = self.table.scroll;
         *self.wanted.lock().unwrap() = self.table.keys(s..s + self.page() + 1);
         invalidate(self.hwnd);
+    }
+
+    fn set_hot(&mut self, hot: Hot) {
+        if hot != self.hot {
+            self.hot = hot;
+            invalidate(self.hwnd);
+        }
+    }
+
+    fn set_focus(&mut self, focus: bool) {
+        if focus != self.focus {
+            self.focus = focus;
+            invalidate(self.hwnd);
+        }
+    }
+
+    /// A process or group row is selected: End task acts on it.
+    fn can_end(&self) -> bool {
+        !self.performance && self.table.selected_index().is_some_and(|i| !matches!(self.table.rows[i].key, Key::Section(_)))
     }
 
     fn rebuild(&mut self) {
@@ -471,7 +536,7 @@ impl App {
 
     fn save(&mut self) {
         let s = &mut self.settings;
-        (s.sort, s.desc, s.grouped, s.performance) = (self.table.sort, self.table.desc, self.table.grouped, self.performance);
+        (s.sort, s.desc, s.grouped, s.performance, s.nav) = (self.table.sort, self.table.desc, self.table.grouped, self.performance, self.nav_open);
         let mut p = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
         if unsafe { GetWindowPlacement(self.hwnd, &mut p) }.is_ok() {
             let r = p.rcNormalPosition;
@@ -482,7 +547,9 @@ impl App {
 
     fn show(&mut self) {
         unsafe {
-            let _ = ShowWindow(self.hwnd, SW_SHOW);
+            // SW_SHOW leaves a minimized window minimized, and the foreground request then only
+            // flashes its taskbar button.
+            let _ = ShowWindow(self.hwnd, if IsIconic(self.hwnd).as_bool() { SW_RESTORE } else { SW_SHOW });
             if !SetForegroundWindow(self.hwnd).as_bool() || GetForegroundWindow() != self.hwnd {
                 // Foreground lock: after the hook swallowed the key, this process did not get the
                 // last input. Joining the foreground thread's input queue lifts the lock.
@@ -500,6 +567,7 @@ impl App {
     }
 
     fn hide(&mut self) {
+        self.focus = false;
         self.save();
         let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
         self.shown = false;
@@ -569,6 +637,11 @@ impl App {
             self.set_tab(!self.performance);
             return true;
         }
+        if vk == VK_F && ctrl() {
+            self.set_tab(false);
+            self.set_focus(true);
+            return true;
+        }
         if self.performance {
             // The table is not on screen: no key may act on its selection (Delete ends a task).
             if vk == VK_ESCAPE {
@@ -580,8 +653,9 @@ impl App {
         let last = self.table.rows.len().saturating_sub(1);
         let page = self.page();
         match vk {
-            VK_ESCAPE if !self.table.filter.is_empty() => {
+            VK_ESCAPE if !self.table.filter.is_empty() || self.focus => {
                 self.table.filter.clear();
+                self.focus = false;
                 self.rebuild();
             }
             VK_ESCAPE => self.hide(),
@@ -665,6 +739,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 processes: a.snap.procs.len(),
                 performance: a.performance,
                 history: &a.snap.history,
+                nav_open: a.nav_open,
+                focus: a.focus,
+                hot: a.hot,
+                can_end: a.can_end(),
+                maximized: unsafe { IsZoomed(hwnd) }.as_bool(),
             };
             let _ = a.renderer.paint(hwnd, dpi(hwnd), &a.theme, &frame);
             let _ = unsafe { EndPaint(hwnd, &ps) };
@@ -719,7 +798,16 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 }
                 Drag::Header(_) => {}
                 Drag::None => {
-                    let hover = match a.hit(x, y) {
+                    let hit = a.hit(x, y);
+                    a.set_hot(match hit {
+                        Hit::Header(c) => Hot::Header(c),
+                        Hit::Nav(k) => Hot::Nav(k),
+                        Hit::Search => Hot::Search,
+                        Hit::SearchClear => Hot::SearchClear,
+                        Hit::EndTask => Hot::EndTask,
+                        _ => Hot::None,
+                    });
+                    let hover = match hit {
                         Hit::Row(i, _) => Some(i),
                         _ => None,
                     };
@@ -735,20 +823,87 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         }
         WM_MOUSELEAVE => {
             a.table.hover = None;
+            a.hot = Hot::None;
             invalidate(hwnd);
+            LRESULT(0)
+        }
+        // The title bar is client area (WM_NCCALCSIZE): Windows still moves, snaps and resizes the
+        // window from the codes WM_NCHITTEST returns, and shows Snap Layouts over HTMAXBUTTON.
+        WM_NCCALCSIZE if wp.0 != 0 => {
+            let p = unsafe { &mut *(lp.0 as *mut NCCALCSIZE_PARAMS) };
+            let top = p.rgrc[0].top;
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }; // side and bottom borders
+            // A maximized window hangs over the screen edge by its border: keep that part hidden.
+            p.rgrc[0].top = top + if unsafe { IsZoomed(hwnd) }.as_bool() { frame(hwnd) } else { 0 };
+            LRESULT(0)
+        }
+        WM_NCHITTEST => {
+            let d = unsafe { DefWindowProcW(hwnd, msg, wp, lp) };
+            if d.0 as u32 != HTCLIENT {
+                return d;
+            }
+            let mut p = POINT { x: lp.0 as i16 as i32, y: (lp.0 >> 16) as i16 as i32 };
+            let _ = unsafe { ScreenToClient(hwnd, &mut p) };
+            let maximized = unsafe { IsZoomed(hwnd) }.as_bool();
+            if !maximized && p.y < frame(hwnd) {
+                return LRESULT(HTTOP as isize);
+            }
+            let s = 96.0 / dpi(hwnd) as f32;
+            LRESULT(match a.hit(p.x as f32 * s, p.y as f32 * s) {
+                Hit::Caption(k) => [HTMINBUTTON, HTMAXBUTTON, HTCLOSE][k],
+                Hit::Title => HTCAPTION,
+                _ => HTCLIENT,
+            } as isize)
+        }
+        WM_NCMOUSEMOVE => {
+            a.set_hot(caption(wp).map_or(Hot::None, Hot::Caption));
+            let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE | TME_NONCLIENT, hwndTrack: hwnd, dwHoverTime: 0 };
+            let _ = unsafe { TrackMouseEvent(&mut t) };
+            unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+        }
+        WM_NCMOUSELEAVE => {
+            a.set_hot(Hot::None);
+            LRESULT(0)
+        }
+        // Caption buttons act on release over the same button, like Windows' own. Default handling
+        // would draw the old Windows buttons.
+        WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK if caption(wp).is_some() => {
+            a.caption_down = wp.0 as u32;
+            LRESULT(0)
+        }
+        WM_NCLBUTTONUP if caption(wp).is_some() => {
+            let down = std::mem::take(&mut a.caption_down);
+            if down == wp.0 as u32 {
+                a.set_hot(Hot::None);
+                let command = match down {
+                    HTMINBUTTON => SC_MINIMIZE,
+                    HTMAXBUTTON if unsafe { IsZoomed(hwnd) }.as_bool() => SC_RESTORE,
+                    HTMAXBUTTON => SC_MAXIMIZE,
+                    _ => SC_CLOSE,
+                };
+                let _ = unsafe { PostMessageW(Some(hwnd), WM_SYSCOMMAND, WPARAM(command as usize), LPARAM(0)) };
+            }
             LRESULT(0)
         }
         WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
             let mut p = POINT::default();
             let _ = unsafe { GetCursorPos(&mut p) };
             let _ = unsafe { windows::Win32::Graphics::Gdi::ScreenToClient(hwnd, &mut p) };
-            let edge = matches!(a.drag, Drag::Column(..)) || matches!(a.hit(p.x as f32 * 96.0 / dpi(hwnd) as f32, p.y as f32 * 96.0 / dpi(hwnd) as f32), Hit::Edge(_));
-            let _ = unsafe { SetCursor(LoadCursorW(None, if edge { IDC_SIZEWE } else { IDC_ARROW }).ok()) };
+            let hit = a.hit(p.x as f32 * 96.0 / dpi(hwnd) as f32, p.y as f32 * 96.0 / dpi(hwnd) as f32);
+            let cursor = match hit {
+                _ if matches!(a.drag, Drag::Column(..)) => IDC_SIZEWE,
+                Hit::Edge(_) => IDC_SIZEWE,
+                Hit::Search => IDC_IBEAM,
+                _ => IDC_ARROW,
+            };
+            let _ = unsafe { SetCursor(LoadCursorW(None, cursor).ok()) };
             LRESULT(1)
         }
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
             let (x, y) = a.point(lp);
-            match a.hit(x, y) {
+            let hit = a.hit(x, y);
+            a.set_focus(matches!(hit, Hit::Search));
+            match hit {
                 Hit::Edge(i) => {
                     a.drag = Drag::Column(i, x, a.settings.widths[i]);
                     unsafe { SetCapture(hwnd) };
@@ -770,13 +925,23 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         unsafe { SetCapture(hwnd) };
                     }
                 }
-                Hit::Tab(p) => a.set_tab(p),
+                Hit::Nav(0) => {
+                    a.nav_open = !a.nav_open;
+                    a.changed();
+                    a.save();
+                }
+                Hit::Nav(k) => a.set_tab(k == 2),
+                Hit::EndTask if a.can_end() => a.end_task(),
+                Hit::SearchClear => {
+                    a.table.filter.clear();
+                    a.rebuild();
+                }
                 Hit::Track => {
                     let up = render::thumb(a.size().1, a.table.rows.len(), a.table.scroll).is_some_and(|(y0, _)| y < y0);
                     let page = a.page() as isize;
                     a.scroll_by(if up { -page } else { page });
                 }
-                Hit::None => {}
+                _ => {}
             }
             LRESULT(0)
         }
@@ -822,6 +987,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             if let Some(c) = char::from_u32(wp.0 as u32).filter(|c| !c.is_control() && !ctrl()) {
                 a.table.filter.push(c);
                 a.table.scroll = 0;
+                a.focus = true;
                 if a.performance {
                     a.set_tab(false); // rebuilds
                 } else {

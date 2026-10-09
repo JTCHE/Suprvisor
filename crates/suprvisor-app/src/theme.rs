@@ -9,6 +9,8 @@ pub struct Theme {
     pub text: u32,
     pub text_secondary: u32,
     pub accent: u32,
+    /// The solid content layer; Mica shows around it (title bar, navigation pane).
+    pub layer: u32,
 }
 
 fn dword(key: PCWSTR, value: PCWSTR) -> Option<u32> {
@@ -25,9 +27,9 @@ impl Theme {
             .map(|c| (c & 0xFF) << 16 | (c & 0xFF00) | (c >> 16) & 0xFF)
             .unwrap_or(0x0078D4);
         if dark {
-            Self { dark, text: 0xFFFFFF, text_secondary: 0xC5C5C5, accent }
+            Self { dark, text: 0xFFFFFF, text_secondary: 0xC5C5C5, accent, layer: 0x191919 }
         } else {
-            Self { dark, text: 0x1A1A1A, text_secondary: 0x5D5D5D, accent }
+            Self { dark, text: 0x1A1A1A, text_secondary: 0x5D5D5D, accent, layer: 0xF9F9F9 }
         }
     }
 }

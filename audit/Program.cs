@@ -195,7 +195,7 @@ System.Drawing.Point NameHeader()
     var p = new System.Drawing.Point(0, 0);
     ClientToScreen(h, ref p);
     double s = GetDpiForWindow(h) / 96.0;
-    return new System.Drawing.Point(p.X + (int)(40 * s), p.Y + (int)(80 * s));
+    return new System.Drawing.Point(p.X + (int)(260 * s), p.Y + (int)(130 * s)); // right of the navigation pane, open or not
 }
 
 static double Median(IEnumerable<double> v) => Pct(v.ToList(), 50);

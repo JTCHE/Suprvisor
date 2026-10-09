@@ -35,7 +35,7 @@ pub enum Col {
     Disk,
 }
 
-pub const COLS: [Col; 7] = [Col::Name, Col::Pid, Col::Cpu, Col::Ram, Col::Gpu, Col::Vram, Col::Disk];
+pub const COLS: [Col; 7] = [Col::Name, Col::Cpu, Col::Ram, Col::Gpu, Col::Vram, Col::Disk, Col::Pid];
 
 impl Col {
     pub fn id(self) -> &'static str {
