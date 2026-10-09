@@ -1,0 +1,251 @@
+{
+  "target": "suprvisor",
+  "launchMode": "exe (IFEO stub path)",
+  "load": false,
+  "date": "2026-10-09T18:21:19.1107696+02:00",
+  "launch": {
+    "firstPaintMs": 2.992,
+    "vc90Ms": 296.5137,
+    "runs": [
+      {
+        "FirstPaintMs": 2.992,
+        "Vc90Ms": 305.4279,
+        "Frames": 461,
+        "MissedFrames": 13,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 2.4518,
+        "Vc90Ms": 324.3714,
+        "Frames": 425,
+        "MissedFrames": 21,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 4.2279,
+        "Vc90Ms": 296.5137,
+        "Frames": 463,
+        "MissedFrames": 10,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 3.7068,
+        "Vc90Ms": 295.2263,
+        "Frames": 427,
+        "MissedFrames": 11,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 2.131,
+        "Vc90Ms": 293.5251,
+        "Frames": 452,
+        "MissedFrames": 6,
+        "SameRect": true
+      }
+    ]
+  },
+  "sort": {
+    "medianMs": "NaN",
+    "maxMs": "NaN",
+    "missed": 10,
+    "runsMs": [
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN"
+    ]
+  },
+  "scroll": {
+    "frames": 85,
+    "p50Ms": 21.0352,
+    "p99Ms": 98.5785
+  },
+  "visible": {
+    "cpuPctOneCore": 2.34375,
+    "privateMB": 33,
+    "workingSetMB": 54
+  },
+  "sampleLaunchFrames": [
+    {
+      "ms": 57.6,
+      "changed": 1,
+      "fromStart": 1
+    },
+    {
+      "ms": 63.5,
+      "changed": 0.958,
+      "fromStart": 1
+    },
+    {
+      "ms": 73.1,
+      "changed": 0.037,
+      "fromStart": 1
+    },
+    {
+      "ms": 84.4,
+      "changed": 0.991,
+      "fromStart": 1
+    },
+    {
+      "ms": 91.8,
+      "changed": 0.132,
+      "fromStart": 1
+    },
+    {
+      "ms": 103.9,
+      "changed": 0.096,
+      "fromStart": 1
+    },
+    {
+      "ms": 112.2,
+      "changed": 0.586,
+      "fromStart": 1
+    },
+    {
+      "ms": 124.1,
+      "changed": 0.655,
+      "fromStart": 1
+    },
+    {
+      "ms": 131.8,
+      "changed": 0.412,
+      "fromStart": 1
+    },
+    {
+      "ms": 142,
+      "changed": 0.121,
+      "fromStart": 1
+    },
+    {
+      "ms": 152.2,
+      "changed": 0.615,
+      "fromStart": 1
+    },
+    {
+      "ms": 162.2,
+      "changed": 0.308,
+      "fromStart": 1
+    },
+    {
+      "ms": 171.9,
+      "changed": 0.308,
+      "fromStart": 1
+    },
+    {
+      "ms": 182.5,
+      "changed": 0.266,
+      "fromStart": 1
+    },
+    {
+      "ms": 192.3,
+      "changed": 0.62,
+      "fromStart": 1
+    },
+    {
+      "ms": 201.8,
+      "changed": 0.267,
+      "fromStart": 1
+    },
+    {
+      "ms": 212.2,
+      "changed": 0.212,
+      "fromStart": 1
+    },
+    {
+      "ms": 221.8,
+      "changed": 0.37,
+      "fromStart": 1
+    },
+    {
+      "ms": 232,
+      "changed": 0.635,
+      "fromStart": 1
+    },
+    {
+      "ms": 242.3,
+      "changed": 0.286,
+      "fromStart": 1
+    },
+    {
+      "ms": 252.2,
+      "changed": 0.201,
+      "fromStart": 1
+    },
+    {
+      "ms": 261.8,
+      "changed": 0.201,
+      "fromStart": 1
+    },
+    {
+      "ms": 272.3,
+      "changed": 0.628,
+      "fromStart": 1
+    },
+    {
+      "ms": 282.3,
+      "changed": 0.221,
+      "fromStart": 1
+    },
+    {
+      "ms": 292,
+      "changed": 0.191,
+      "fromStart": 1
+    },
+    {
+      "ms": 302.4,
+      "changed": 0.183,
+      "fromStart": 1
+    },
+    {
+      "ms": 623,
+      "changed": 0.025,
+      "fromStart": 1
+    },
+    {
+      "ms": 1143,
+      "changed": 0.02,
+      "fromStart": 1
+    },
+    {
+      "ms": 1660.9,
+      "changed": 0.021,
+      "fromStart": 1
+    },
+    {
+      "ms": 2174.9,
+      "changed": 0.02,
+      "fromStart": 1
+    },
+    {
+      "ms": 2691.1,
+      "changed": 0.024,
+      "fromStart": 1
+    },
+    {
+      "ms": 3271.1,
+      "changed": 0.025,
+      "fromStart": 1
+    },
+    {
+      "ms": 3790.8,
+      "changed": 0.025,
+      "fromStart": 1
+    },
+    {
+      "ms": 4311.6,
+      "changed": 0.024,
+      "fromStart": 1
+    },
+    {
+      "ms": 4830.9,
+      "changed": 0.016,
+      "fromStart": 1
+    }
+  ]
+}

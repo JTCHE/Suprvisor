@@ -1,0 +1,132 @@
+{
+  "target": "suprvisor",
+  "launchMode": "exe (IFEO stub path)",
+  "load": false,
+  "date": "2026-10-09T18:24:36.2312363+02:00",
+  "launch": {
+    "firstPaintMs": 5.1772,
+    "vc90Ms": 70.2589,
+    "runs": [
+      {
+        "FirstPaintMs": 10.3278,
+        "Vc90Ms": 70.2589,
+        "Frames": 444,
+        "MissedFrames": 6,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 2.3827,
+        "Vc90Ms": 62.7318,
+        "Frames": 436,
+        "MissedFrames": 4,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 5.1772,
+        "Vc90Ms": 78.2992,
+        "Frames": 441,
+        "MissedFrames": 19,
+        "SameRect": true
+      }
+    ]
+  },
+  "sort": {
+    "medianMs": "NaN",
+    "maxMs": "NaN",
+    "missed": 10,
+    "runsMs": [
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN",
+      "NaN"
+    ]
+  },
+  "scroll": {
+    "frames": 76,
+    "p50Ms": 21.6617,
+    "p99Ms": 431.44
+  },
+  "visible": {
+    "cpuPctOneCore": 3.4375000000000004,
+    "privateMB": 32,
+    "workingSetMB": 52
+  },
+  "sampleLaunchFrames": [
+    {
+      "ms": 30.9,
+      "changed": 1,
+      "fromStart": 1
+    },
+    {
+      "ms": 42.7,
+      "changed": 1,
+      "fromStart": 1
+    },
+    {
+      "ms": 51.3,
+      "changed": 0.996,
+      "fromStart": 1
+    },
+    {
+      "ms": 59.9,
+      "changed": 0.954,
+      "fromStart": 1
+    },
+    {
+      "ms": 132.4,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 650.8,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 1160.7,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 1659.8,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 2179.7,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 2689,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 3240.3,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 3740.4,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 4260.5,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 4760.7,
+      "changed": 0.001,
+      "fromStart": 1
+    }
+  ]
+}

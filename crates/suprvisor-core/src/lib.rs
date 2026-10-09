@@ -26,6 +26,8 @@ pub struct Proc {
     pub parent_pid: u32,
     /// Exe file name, for example `houdini.exe`.
     pub name: String,
+    /// Full exe path. Empty for minimal processes (System, Registry) and processes no handle can open.
+    pub path: String,
     /// Kernel `CreateTime`. With `pid`, identifies a process across calls (pids are reused).
     pub create_time: i64,
     /// Share of the whole machine, 0-100 (100 = all logical CPUs busy), like Task Manager.
@@ -282,7 +284,8 @@ impl Collector {
                 handles::close(full);
             }
         }
-        t.p.name = handles::name(t.handle).unwrap_or_default();
+        t.p.path = handles::path(t.handle).unwrap_or_default();
+        t.p.name = t.p.path.rsplit('\\').next().unwrap_or_default().to_owned();
         t.p.parent_pid = handles::parent_pid(t.handle);
         t.p.private_ws = handles::private_ws(t.handle).unwrap_or(0);
         if t.gpu_ok {
@@ -290,6 +293,22 @@ impl Collector {
         }
         t
     }
+}
+
+/// Ends the process, if `pid` still names the process created at `create_time`.
+/// Ok when the process is already gone.
+pub fn kill(pid: u32, create_time: i64) -> windows::core::Result<()> {
+    handles::kill(pid, create_time)
+}
+
+/// The command line, for example `"C:\...\code.exe" --type=renderer`.
+pub fn command_line(pid: u32) -> Option<String> {
+    handles::command_line(pid)
+}
+
+/// True for processes marked critical: ending one stops Windows with a bug check.
+pub fn is_critical(pid: u32) -> bool {
+    handles::is_critical(pid)
 }
 
 #[cfg(test)]
@@ -334,5 +353,11 @@ mod tests {
         let full = c.scan_full().unwrap();
         assert!(full.len() >= all.len() * 9 / 10, "{} vs {}", full.len(), all.len());
         assert!(full.iter().all(|p| !p.name.is_empty()), "every process has a name");
+
+        let me_proc = &all[me];
+        assert!(me_proc.path.ends_with(&me_proc.name) && me_proc.path.contains('\\'));
+        assert!(command_line(me_proc.pid).is_some_and(|c| c.contains("suprvisor_core")));
+        assert!(!is_critical(me_proc.pid));
+        assert!(kill(me_proc.pid, me_proc.create_time + 1).is_ok(), "a reused pid is not killed");
     }
 }
