@@ -85,15 +85,25 @@ move by +-1% of a core and by tens of ms between runs. A clean idle run and the 
 | VC90 (strict) | < 50 ms | ~300 ms | Mica's activation crossfade; the content is complete in the first frame |
 | Sort | < 10 ms | 10-38 ms, median ~20 | ~3 ms input, ~5 ms rebuild + paint, then the next vblank; outliers to 1.2 s under the cook |
 | Scroll p50 / p99 | p99 < 10 ms | 10.1 / 20.8 ms | one frame per notch at 100 Hz; p99 = one missed vblank |
-| Hidden | < 0.1% | 0 ms CPU over 5 s | no timer while hidden (the v1.1 1 s sampling is not built yet) |
-| Visible | < 1% | 2.5-5.8% | the collector alone is ~2% (see above) |
-| Private memory | < 50 MB | 35-46 MB | |
+| Hidden | < 0.1% | 0.091% (60 s, by CPU cycles) | v1.1: one totals sample per second (~0.45 ms) plus a full GPU engine read every 60 s (~11 ms) |
+| Visible, Processes | < 1% | 2.7-3.4% | the collector alone is ~2-3% (see above) |
+| Visible, Performance | < 1% | 0.94% | v1.1: one sample and one repaint per second |
+| Private memory | < 50 MB | 23-25 MB | single-threaded WARP (was 35-46 MB) |
 
 What changed the numbers:
 - Text layouts cached across frames: paint 6 ms to 3.5 ms.
 - Flip-model swapchain through DirectComposition (instead of an HWND render target, which DWM
   shows one or two vblanks late): sort median 30 ms to 19 ms, scroll one frame per notch.
 - Keyboard hook for Ctrl+Shift+Esc instead of a process start: first frame median ~70 to 38 ms.
+- WARP without its worker pool (`D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS`):
+  one worker per core woke on every frame. Performance tab 3.7% to 1.8% (then 0.94% at 1 Hz),
+  private memory -8 MB. Table paint 3.4 to 4.4 ms; an A/B audit showed the same sort and scroll
+  latency.
+- PDH for disk and network cost ~4 ms per read; `IOCTL_DISK_PERFORMANCE` and `GetIfEntry2` on the
+  physical adapters cost ~0.35 ms.
+- Bug found by the hidden measurement: at `--resident` start, the creation `WM_SIZE` told the
+  collector the window was visible, so a hidden instance listed processes every 500 ms until the
+  first show/hide.
 - Tried and dropped: hiding by DWM cloak (the Mica crossfade comes from activation, not from
   showing); `SW_SHOWNA` before activation (no gain); D2D software rendering copied into the
   swapchain through WIC (same CPU as WARP, more code).

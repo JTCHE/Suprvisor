@@ -10,7 +10,7 @@
 
 mod gpu;
 mod handles;
-mod pdh;
+mod io;
 mod procs;
 mod system;
 
@@ -55,7 +55,7 @@ pub struct System {
     pub gpu: f32,
     pub vram_used: u64,
     pub vram_total: u64,
-    /// Physical disk and network bytes per second. Updated by [`Collector::scan`].
+    /// Physical disk and network bytes per second, averaged since the previous read.
     pub disk_read: u64,
     pub disk_write: u64,
     pub net_recv: u64,
@@ -125,12 +125,11 @@ impl Tracked {
 
 pub struct Collector {
     procs: procs::Procs,
-    pdh: pdh::Pdh,
+    io: io::Io,
     gpu: gpu::Adapters,
     cpu_times: system::SystemTimes,
     tracked: HashMap<(u32, i64), Tracked>,
     generation: u64,
-    io: pdh::Sample,
     cpus: u32,
     vram_total: u64,
 }
@@ -142,21 +141,24 @@ impl Collector {
     pub fn new() -> windows::core::Result<Self> {
         Ok(Self {
             procs: procs::Procs::new(),
-            pdh: pdh::Pdh::new()?,
+            io: io::Io::new(),
             gpu: gpu::Adapters::new(),
             cpu_times: system::SystemTimes::default(),
             tracked: HashMap::new(),
             generation: 0,
-            io: pdh::Sample::default(),
             cpus: system::logical_cpus(),
             vram_total: system::vram_total(),
         })
     }
 
-    /// Machine totals. CPU and GPU are averages since the previous read (0 on the first call).
-    pub fn system(&mut self) -> System {
+    /// Machine totals. Rates are averages since the previous read (0 on the first call).
+    /// Cheap enough to call every second while hidden (the Performance tab history).
+    /// `all_gpu_engines`: also read the idle GPU engines (~10 ms), to see one that became busy.
+    /// Without it, only the engines busy at the last full read are read (~20 us).
+    pub fn system(&mut self, all_gpu_engines: bool) -> System {
         let (ram_used, ram_total) = system::memory();
-        let (gpu, vram_used) = self.gpu.system(false);
+        let (gpu, vram_used) = self.gpu.system(all_gpu_engines);
+        let io = self.io.collect();
         System {
             cpu: self.cpu_times.cpu(),
             ram_used,
@@ -164,15 +166,14 @@ impl Collector {
             gpu,
             vram_used,
             vram_total: self.vram_total,
-            disk_read: self.io.disk_read,
-            disk_write: self.io.disk_write,
-            net_recv: self.io.net_recv,
-            net_sent: self.io.net_sent,
+            disk_read: io.disk_read,
+            disk_write: io.disk_write,
+            net_recv: io.net_recv,
+            net_sent: io.net_sent,
         }
     }
 
     /// The process list. New processes have zero rates until the next read.
-    /// Also refreshes system disk and network, and which GPU engines are busy.
     pub fn scan(&mut self) -> Vec<Proc> {
         self.generation += 1;
         let generation = self.generation;
@@ -200,8 +201,6 @@ impl Collector {
         }
         // Exited processes drop here (closing their handles). Unopenable ones wait for scan_full.
         self.tracked.retain(|_, t| t.seen == generation || t.handle.is_invalid());
-        self.io = self.pdh.collect().unwrap_or_default();
-        self.gpu.system(true);
         self.tracked.values().map(|t| t.p.clone()).collect()
     }
 
@@ -325,11 +324,11 @@ mod tests {
     #[test]
     fn collector_is_sane() {
         let mut c = Collector::new().unwrap();
-        c.system();
+        c.system(true);
         c.scan();
         burn(300);
         let mut all = c.scan();
-        let s = c.system();
+        let s = c.system(true);
 
         let me = all.iter().position(|p| p.pid == std::process::id()).expect("own process listed");
         assert!(all[me].name.to_lowercase().starts_with("suprvisor_core"), "{}", all[me].name);

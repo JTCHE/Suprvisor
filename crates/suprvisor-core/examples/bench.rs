@@ -34,7 +34,7 @@ fn main() -> windows::core::Result<()> {
     let (c0, t) = (cycles(), Instant::now());
     let mut col = Collector::new()?;
     println!("new: {:.1} ms CPU ({:.0} ms wall)", (cycles() - c0) as f64 / per_ms, t.elapsed().as_secs_f64() * 1e3);
-    col.system();
+    col.system(true);
     let mut all = col.scan();
     col.scan_full()?;
 
@@ -42,7 +42,7 @@ fn main() -> windows::core::Result<()> {
     for tick in 0..ticks {
         std::thread::sleep(Duration::from_millis(500));
         let c = cycles();
-        let s = col.system();
+        let s = col.system(false);
         sys.push((cycles() - c) as f64 / per_ms);
         all.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
         let c = cycles();
@@ -68,6 +68,7 @@ fn main() -> windows::core::Result<()> {
     let med = |v: &mut Vec<f64>| { v.sort_by(f64::total_cmp); v[v.len() / 2] };
     let (sys, refresh, scan, full) = (med(&mut sys), med(&mut refresh), med(&mut scan), med(&mut full));
     println!("CPU per call (median): system {sys:.3} ms, refresh(30 rows) {refresh:.3} ms, scan {scan:.2} ms, scan_full {full:.2} ms");
+    println!("hidden cost: system every 1 s = {:.3}% of one core", sys / 1000.0 * 100.0);
     for (scan_s, full_s) in [(2.0, 30.0), (3.0, 30.0), (3.0, 60.0)] {
         let pct = (sys + refresh) / 500.0 * 100.0 + scan / (scan_s * 1e3) * 100.0 + full / (full_s * 1e3) * 100.0;
         println!("visible cost: 500 ms fast tick, scan every {scan_s} s, scan_full every {full_s} s = {pct:.2}% of one core");

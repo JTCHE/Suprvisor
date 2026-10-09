@@ -1,6 +1,6 @@
 //! Direct2D + DirectWrite drawing. Layout is in DIPs; the render target scales to the window DPI.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use suprvisor_core::System;
@@ -8,7 +8,7 @@ use windows::Win32::Foundation::{HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
-use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice};
+use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS, D3D11_SDK_VERSION, D3D11CreateDevice};
 use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -41,6 +41,17 @@ pub fn columns(width: f32, widths: &[f32; 6]) -> [(f32, f32); 7] {
     }
     out[0] = (PAD, x);
     out
+}
+
+/// Tab labels in the top bar: label, left and right edge. The second is Performance.
+const TABS: [(&str, f32, f32); 2] = [("Processes", PAD + 256.0, PAD + 340.0), ("Performance", PAD + 348.0, PAD + 452.0)];
+
+/// The tab under a point: Some(true) for Performance.
+pub fn tab_at(x: f32, y: f32) -> Option<bool> {
+    if !(7.0..37.0).contains(&y) {
+        return None;
+    }
+    TABS.iter().position(|&(_, x0, x1)| (x0..x1).contains(&x)).map(|i| i == 1)
 }
 
 /// Rows that fit in a client area `height` DIPs tall.
@@ -100,8 +111,12 @@ impl Target {
         unsafe { GetClientRect(hwnd, &mut rc)? };
         let mut device = None;
         // WARP: software rendering on the CPU, so the GPU driver (40 MB private) never loads and
-        // drawing does not wait behind a render or sim that saturates the GPU.
-        unsafe { D3D11CreateDevice(None, D3D_DRIVER_TYPE_WARP, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, None)? };
+        // drawing does not wait behind a render or sim that saturates the GPU. Single-threaded:
+        // WARP's worker pool (one thread per core) cost more to wake than it saved on these small
+        // frames: Performance tab 3.7% to 1.8% of one core, private memory -8 MB. Table paint goes
+        // from 3.4 to 4.4 ms, which leaves sort and scroll latency the same.
+        let flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS;
+        unsafe { D3D11CreateDevice(None, D3D_DRIVER_TYPE_WARP, HMODULE::default(), flags, None, D3D11_SDK_VERSION, Some(&mut device), None, None)? };
         let dxgi: IDXGIDevice1 = device.unwrap().cast()?;
         unsafe { dxgi.SetMaximumFrameLatency(1)? };
         let desc = DXGI_SWAP_CHAIN_DESC1 {
@@ -238,6 +253,63 @@ pub struct Frame<'a> {
     pub icons: &'a HashMap<String, Arc<Icon>>,
     pub widths: &'a [f32; 6],
     pub processes: usize,
+    pub performance: bool,
+    pub history: &'a VecDeque<System>,
+}
+
+/// One Performance graph.
+struct Graph {
+    name: &'static str,
+    value: String,
+    detail: String,
+    max: f64, // value at the top of the graph
+    series: Vec<f64>,
+}
+
+/// 1, 2 or 5 times a power of ten, at least `v`: a readable top for an auto-scaled graph.
+fn nice(v: f64) -> f64 {
+    let p = 10f64.powf(v.max(1.0).log10().floor());
+    [1.0, 2.0, 5.0, 10.0].iter().map(|m| m * p).find(|&m| m >= v).unwrap_or(10.0 * p)
+}
+
+fn graphs(s: &System, h: &VecDeque<System>) -> [Graph; 6] {
+    let series = |f: &dyn Fn(&System) -> f64| h.iter().map(f).collect::<Vec<f64>>();
+    let share = |used: u64, total: u64| if total > 0 { format!("{:.0}% in use", used as f64 * 100.0 / total as f64) } else { String::new() };
+    let rate = |f: &dyn Fn(&System) -> f64| nice(series(f).into_iter().fold(1e6, f64::max));
+    let disk = |s: &System| (s.disk_read + s.disk_write) as f64;
+    let net = |s: &System| (s.net_recv + s.net_sent) as f64;
+    [
+        Graph { name: "CPU", value: pct(s.cpu), detail: String::new(), max: 100.0, series: series(&|s| s.cpu as f64) },
+        Graph {
+            name: "Memory",
+            value: format!("{:.1} / {:.0} GB", gb(s.ram_used), gb(s.ram_total)),
+            detail: share(s.ram_used, s.ram_total),
+            max: s.ram_total as f64,
+            series: series(&|s| s.ram_used as f64),
+        },
+        Graph { name: "GPU", value: pct(s.gpu), detail: "busiest engine".into(), max: 100.0, series: series(&|s| s.gpu as f64) },
+        Graph {
+            name: "VRAM",
+            value: format!("{:.1} / {:.0} GB", gb(s.vram_used), gb(s.vram_total)),
+            detail: share(s.vram_used, s.vram_total),
+            max: s.vram_total as f64,
+            series: series(&|s| s.vram_used as f64),
+        },
+        Graph {
+            name: "Disk",
+            value: format!("{} MB/s", mbs(s.disk_read + s.disk_write)),
+            detail: format!("read {}  ·  write {} MB/s  ·  scale {} MB/s", mbs(s.disk_read), mbs(s.disk_write), mbs(rate(&disk) as u64)),
+            max: rate(&disk),
+            series: series(&disk),
+        },
+        Graph {
+            name: "Network",
+            value: format!("{} MB/s", mbs(s.net_recv + s.net_sent)),
+            detail: format!("receive {}  ·  send {} MB/s  ·  scale {} MB/s", mbs(s.net_recv), mbs(s.net_sent), mbs(rate(&net) as u64)),
+            max: rate(&net),
+            series: series(&net),
+        },
+    ]
 }
 
 impl Renderer {
@@ -299,6 +371,75 @@ impl Renderer {
         let b = unsafe { t.CreateBitmap(size, Some(icon.bgra.as_ptr().cast()), icon.size * 4, &props) }.ok();
         self.bitmaps.insert(path.to_owned(), b.clone());
         b
+    }
+
+    /// A path through `pts`; closed and filled, or open for a line.
+    fn path(&self, pts: &[windows_numerics::Vector2], filled: bool) -> Result<ID2D1PathGeometry1> {
+        unsafe {
+            let g = self.factory.CreatePathGeometry()?;
+            let sink = g.Open()?;
+            sink.BeginFigure(pts[0], if filled { D2D1_FIGURE_BEGIN_FILLED } else { D2D1_FIGURE_BEGIN_HOLLOW });
+            sink.AddLines(&pts[1..]);
+            sink.EndFigure(if filled { D2D1_FIGURE_END_CLOSED } else { D2D1_FIGURE_END_OPEN });
+            sink.Close()?;
+            Ok(g)
+        }
+    }
+
+    /// The Performance tab: a grid of 60 s graphs under the top bar.
+    #[allow(clippy::too_many_arguments)]
+    fn performance(&mut self, t: &ID2D1DeviceContext, size: D2D_SIZE_F, f: &Frame, text: &ID2D1SolidColorBrush, dim: &ID2D1SolidColorBrush, accent: &ID2D1SolidColorBrush, tile: &ID2D1SolidColorBrush, line: &ID2D1SolidColorBrush) -> Result<()> {
+        const GAP: f32 = 12.0;
+        let fill = unsafe { t.CreateSolidColorBrush(&color(0, 0.0), None)? };
+        unsafe { fill.SetColor(&{ let mut c = accent.GetColor(); c.a = 0.2; c }) };
+        let (x0, y0, x1, y1) = (PAD, TOP + 4.0, size.width - PAD, size.height - PAD);
+        let cols = if x1 - x0 >= 900.0 { 3 } else if x1 - x0 >= 560.0 { 2 } else { 1 };
+        let rows = 6usize.div_ceil(cols);
+        let w = (x1 - x0 - GAP * (cols - 1) as f32) / cols as f32;
+        let h = (y1 - y0 - GAP * (rows - 1) as f32) / rows as f32;
+        for (i, g) in graphs(f.system, f.history).iter().enumerate() {
+            let l = x0 + (i % cols) as f32 * (w + GAP);
+            let top = y0 + (i / cols) as f32 * (h + GAP);
+            let r = l + w;
+            unsafe { t.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect(l, top, r, top + h), radiusX: 6.0, radiusY: 6.0 }, tile) };
+            self.text(t, g.name, SECTION, rect(l + 12.0, top + 6.0, r - 12.0, top + 30.0), text);
+            self.text(t, &g.value, HEAD_VALUE, rect(l + 12.0, top + 6.0, r - 12.0, top + 30.0), text);
+            self.text(t, &g.detail, HEAD_LABEL_LEFT, rect(l + 12.0, top + 30.0, r - 12.0, top + 48.0), dim);
+            let (gl, gt, gr, gb) = (l + 12.0, top + 54.0, r - 12.0, top + h - 12.0);
+            if gb - gt < 8.0 {
+                continue;
+            }
+            unsafe {
+                t.DrawRectangle(&rect(gl + 0.5, gt + 0.5, gr - 0.5, gb - 0.5), line, 1.0, None);
+                for k in 1..4 {
+                    let y = gt + (gb - gt) * k as f32 / 4.0;
+                    t.DrawLine(windows_numerics::Vector2 { X: gl, Y: y }, windows_numerics::Vector2 { X: gr, Y: y }, line, 0.5, None);
+                }
+            }
+            if g.series.len() < 2 || g.max <= 0.0 {
+                continue;
+            }
+            // 60 one-second slots; the newest sample at the right edge.
+            let step = (gr - gl) / 59.0;
+            let n = g.series.len();
+            let mut pts: Vec<windows_numerics::Vector2> = g
+                .series
+                .iter()
+                .enumerate()
+                .map(|(k, v)| windows_numerics::Vector2 { X: gr - (n - 1 - k) as f32 * step, Y: gb - ((v / g.max).clamp(0.0, 1.0) as f32) * (gb - gt) })
+                .collect();
+            let line_path = self.path(&pts, false)?;
+            pts.push(windows_numerics::Vector2 { X: gr, Y: gb });
+            pts.push(windows_numerics::Vector2 { X: gr - (n - 1) as f32 * step, Y: gb });
+            let area = self.path(&pts, true)?;
+            unsafe {
+                t.PushAxisAlignedClip(&rect(gl, gt, gr, gb), D2D1_ANTIALIAS_MODE_ALIASED);
+                t.FillGeometry(&area, &fill, None);
+                t.DrawGeometry(&line_path, accent, 1.5, None);
+                t.PopAxisAlignedClip();
+            }
+        }
+        Ok(())
     }
 
     fn text(&mut self, t: &ID2D1DeviceContext, s: &str, f: usize, r: D2D_RECT_F, b: &ID2D1SolidColorBrush) {
@@ -365,7 +506,19 @@ impl Renderer {
                 mbs(s.net_recv + s.net_sent),
                 f.processes,
             );
-            self.text(&t, &totals, NUM, rect(PAD + 260.0, 7.0, size.width - PAD, 37.0), &dim_b);
+            self.text(&t, &totals, NUM, rect(TABS[1].2 + 16.0, 7.0, size.width - PAD, 37.0), &dim_b);
+            for (k, &(label, x0, x1)) in TABS.iter().enumerate() {
+                let on = (k == 1) == f.performance;
+                self.text(&t, label, if on { SECTION } else { NAME }, rect(x0 + 8.0, 7.0, x1, 37.0), if on { &text } else { &dim_b });
+                if on {
+                    let pill = D2D1_ROUNDED_RECT { rect: rect(x0 + 8.0, 34.0, x0 + 24.0, 37.0), radiusX: 1.5, radiusY: 1.5 };
+                    t.FillRoundedRectangle(&pill, &accent);
+                }
+            }
+            if f.performance {
+                self.performance(&t, size, f, &text, &dim_b, &accent, &hover, &line)?;
+                return self.present(&t);
+            }
 
             // Column headers: headroom total on top, name under it.
             let share = |used: u64, total: u64| if total > 0 { format!("{:.0}%", used as f64 * 100.0 / total as f64) } else { String::new() };
@@ -458,12 +611,28 @@ impl Renderer {
             }
             t.PopAxisAlignedClip();
 
-            self.prev = std::mem::take(&mut self.layouts);
-            let presented = t.EndDraw(None, None).and_then(|_| self.target.as_ref().unwrap().swapchain.Present(1, DXGI_PRESENT(0)).ok());
-            if presented.is_err() {
-                self.target = None; // device lost: recreate on the next paint
-            }
+        }
+        self.present(&t)
+    }
+
+    fn present(&mut self, t: &ID2D1DeviceContext) -> Result<()> {
+        self.prev = std::mem::take(&mut self.layouts);
+        let presented = unsafe { t.EndDraw(None, None).and_then(|_| self.target.as_ref().unwrap().swapchain.Present(1, DXGI_PRESENT(0)).ok()) };
+        if presented.is_err() {
+            self.target = None; // device lost: recreate on the next paint
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn graph_scale_is_readable() {
+        assert_eq!(super::nice(0.0), 1.0);
+        assert_eq!(super::nice(1e6), 1e6);
+        assert_eq!(super::nice(1.2e6), 2e6);
+        assert_eq!(super::nice(3e6), 5e6);
+        assert_eq!(super::nice(7e6), 1e7);
     }
 }

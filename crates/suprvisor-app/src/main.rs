@@ -16,7 +16,7 @@ mod shell;
 mod table;
 mod theme;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -59,11 +59,13 @@ struct Snapshot {
     procs: Arc<Vec<Proc>>,
     titles: Arc<HashMap<u32, String>>,
     icons: Arc<HashMap<String, Arc<shell::Icon>>>,
+    history: Arc<VecDeque<System>>, // one sample per second, oldest first
 }
 
 enum Signal {
     Visible(bool),
-    Rescan, // a process was ended: list again now
+    Rescan,      // a process was ended: list again now
+    Table(bool), // the process table is on screen (else the Performance tab)
 }
 
 enum Drag {
@@ -83,6 +85,7 @@ struct App {
     snap: Snapshot,
     table: Table,
     settings: settings::Settings,
+    performance: bool, // the Performance tab is open
     drag: Drag,
     taskbar_created: u32,
     shown: bool,
@@ -139,7 +142,7 @@ fn main() -> Result<()> {
     let data = Arc::new(Mutex::new(Snapshot::default()));
     let wanted = Arc::new(Mutex::new(Vec::new()));
     let settings = settings::Settings::load();
-    let window = settings.window;
+    let (window, performance) = (settings.window, settings.performance);
     let app = Box::new(App {
         hwnd: HWND::default(),
         renderer: render::Renderer::new()?,
@@ -149,6 +152,7 @@ fn main() -> Result<()> {
         signal: signal_tx,
         snap: Snapshot::default(),
         table: Table::new(settings.sort, settings.desc, settings.grouped),
+        performance: settings.performance,
         settings,
         drag: Drag::None,
         taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
@@ -183,7 +187,7 @@ fn main() -> Result<()> {
     }
     style_window(hwnd, theme::Theme::current().dark);
     add_tray_icon(hwnd);
-    spawn_collector(hwnd, data, wanted, signal_rx);
+    spawn_collector(hwnd, data, wanted, signal_rx, !performance);
     hotkey::install(hwnd, WM_APP_HOTKEY);
     // The resident process runs elevated (logon task); suprvisor.exe started from Explorer, and the
     // IFEO stub, do not. UIPI drops their messages unless allowed here.
@@ -209,12 +213,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Collector thread: samples while the window is visible, sleeps while it is hidden.
-/// Every 500 ms: totals and the processes under the visible rows. Every 3 s: the process list,
-/// window titles, new icons. Every 60 s: the kernel list (per-process disk I/O). See suprvisor-core.
-fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec<(u32, i64)>>>, signal: mpsc::Receiver<Signal>) {
+/// Collector thread. Hidden, or on the Performance tab: machine totals once per second (the graph
+/// history moves once per second, and each repaint costs ~4 ms of CPU). With the process table on
+/// screen: totals every 500 ms, and every 500 ms the processes
+/// under the visible rows; every 3 s the process list, window titles, new icons; every 60 s the
+/// kernel list (per-process disk I/O). See suprvisor-core.
+fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec<(u32, i64)>>>, signal: mpsc::Receiver<Signal>, table: bool) {
     const SCAN: Duration = Duration::from_secs(3);
     const FULL: Duration = Duration::from_secs(60);
+    const HISTORY: usize = 60; // seconds on the Performance graphs
     let hwnd = hwnd.0 as usize; // HWND is not Send; the value is valid on any thread
     std::thread::spawn(move || {
         // The process runs at high priority so the window stays smooth under full load; the
@@ -225,26 +232,31 @@ fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec
         let mut index: HashMap<(u32, i64), usize> = HashMap::new();
         let mut snap = Snapshot::default();
         let mut tried: HashSet<String> = HashSet::new();
-        let (mut shown, mut tick) = (false, 0u64);
-        let (mut scanned, mut full): (Option<Instant>, Option<Instant>) = (None, None);
+        let mut history: VecDeque<System> = VecDeque::with_capacity(HISTORY);
+        let (mut shown, mut table, mut tick) = (false, table, 0u64);
+        let (mut scanned, mut full, mut engines, mut sampled): (Option<Instant>, Option<Instant>, Option<Instant>, Option<Instant>) = (None, None, None, None);
         loop {
-            let wait = if shown { signal.recv_timeout(Duration::from_millis(500)) } else { signal.recv().map_err(|_| RecvTimeoutError::Disconnected) };
-            match wait {
+            match signal.recv_timeout(Duration::from_millis(if shown && table { 500 } else { 1000 })) {
                 Ok(Signal::Visible(v)) => {
                     if v && !shown {
                         scanned = None; // the list is stale after a hidden period
                     }
                     shown = v;
                 }
+                Ok(Signal::Table(t)) => {
+                    if t && !table {
+                        scanned = None; // not listed while the Performance tab was open
+                    }
+                    table = t;
+                }
                 Ok(Signal::Rescan) => scanned = None,
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
-            if !shown {
-                continue;
-            }
+            let listing = shown && table;
             tick += 1;
-            if scanned.is_none_or(|t| t.elapsed() >= SCAN) {
+            if !listing {
+            } else if scanned.is_none_or(|t| t.elapsed() >= SCAN) {
                 procs = if full.is_none_or(|t| t.elapsed() >= FULL) {
                     full = Some(Instant::now());
                     c.scan_full().unwrap_or_else(|_| c.scan())
@@ -276,10 +288,27 @@ fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec
                     }
                 }
             }
-            snap.system = c.system();
-            snap.procs = Arc::new(procs.clone());
+            // Idle GPU engines cost ~10 ms to read: every 3 s while visible, every 60 s while hidden.
+            let all = engines.is_none_or(|t| t.elapsed() >= if shown { SCAN } else { FULL });
+            if all {
+                engines = Some(Instant::now());
+            }
+            snap.system = c.system(all);
+            if sampled.is_none_or(|t| t.elapsed() >= Duration::from_millis(900)) {
+                sampled = Some(Instant::now());
+                if history.len() == HISTORY {
+                    history.pop_front();
+                }
+                history.push_back(snap.system.clone());
+                snap.history = Arc::new(history.clone());
+            }
+            if listing {
+                snap.procs = Arc::new(procs.clone());
+            }
             *data.lock().unwrap() = snap.clone();
-            let _ = unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP_DATA, WPARAM(0), LPARAM(0)) };
+            if shown {
+                let _ = unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP_DATA, WPARAM(0), LPARAM(0)) };
+            }
         }
     });
 }
@@ -341,6 +370,7 @@ enum Hit {
     Row(usize, bool), // row, on its chevron
     Thumb,
     Track,
+    Tab(bool), // true: Performance
 }
 
 impl App {
@@ -363,6 +393,12 @@ impl App {
     }
 
     fn hit(&self, x: f32, y: f32) -> Hit {
+        if let Some(p) = render::tab_at(x, y) {
+            return Hit::Tab(p);
+        }
+        if self.performance {
+            return Hit::None;
+        }
         let (w, h) = self.size();
         let rows_top = TOP + HEAD;
         if x >= w - BAR && y >= rows_top {
@@ -420,9 +456,22 @@ impl App {
         self.changed();
     }
 
+    fn set_tab(&mut self, performance: bool) {
+        if performance == self.performance {
+            return;
+        }
+        self.performance = performance;
+        let _ = self.signal.send(Signal::Table(!performance));
+        if performance {
+            invalidate(self.hwnd);
+        } else {
+            self.rebuild();
+        }
+    }
+
     fn save(&mut self) {
         let s = &mut self.settings;
-        (s.sort, s.desc, s.grouped) = (self.table.sort, self.table.desc, self.table.grouped);
+        (s.sort, s.desc, s.grouped, s.performance) = (self.table.sort, self.table.desc, self.table.grouped, self.performance);
         let mut p = WINDOWPLACEMENT { length: size_of::<WINDOWPLACEMENT>() as u32, ..Default::default() };
         if unsafe { GetWindowPlacement(self.hwnd, &mut p) }.is_ok() {
             let r = p.rcNormalPosition;
@@ -516,6 +565,17 @@ impl App {
     }
 
     fn key(&mut self, vk: VIRTUAL_KEY) -> bool {
+        if vk == VK_TAB && ctrl() {
+            self.set_tab(!self.performance);
+            return true;
+        }
+        if self.performance {
+            // The table is not on screen: no key may act on its selection (Delete ends a task).
+            if vk == VK_ESCAPE {
+                self.hide();
+            }
+            return vk == VK_ESCAPE;
+        }
         let sel = self.table.selected_index();
         let last = self.table.rows.len().saturating_sub(1);
         let page = self.page();
@@ -603,6 +663,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 icons: &a.snap.icons,
                 widths: &a.settings.widths,
                 processes: a.snap.procs.len(),
+                performance: a.performance,
+                history: &a.snap.history,
             };
             let _ = a.renderer.paint(hwnd, dpi(hwnd), &a.theme, &frame);
             let _ = unsafe { EndPaint(hwnd, &ps) };
@@ -611,7 +673,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         WM_ERASEBKGND => LRESULT(1), // Direct2D paints everything
         WM_SIZE => {
             a.renderer.resize((lp.0 & 0xFFFF) as u32, ((lp.0 >> 16) & 0xFFFF) as u32);
-            let _ = a.signal.send(Signal::Visible(wp.0 as u32 != SIZE_MINIMIZED));
+            // WM_SIZE also comes at creation, while the resident window is still hidden.
+            let visible = wp.0 as u32 != SIZE_MINIMIZED && unsafe { IsWindowVisible(hwnd) }.as_bool();
+            let _ = a.signal.send(Signal::Visible(visible));
             a.changed();
             LRESULT(0)
         }
@@ -629,7 +693,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             a.snap = a.data.lock().unwrap().clone();
             a.table.procs = a.snap.procs.clone();
             a.table.titles = a.snap.titles.clone();
-            a.rebuild();
+            if a.performance {
+                invalidate(hwnd);
+            } else {
+                a.rebuild();
+            }
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -702,6 +770,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                         unsafe { SetCapture(hwnd) };
                     }
                 }
+                Hit::Tab(p) => a.set_tab(p),
                 Hit::Track => {
                     let up = render::thumb(a.size().1, a.table.rows.len(), a.table.scroll).is_some_and(|(y0, _)| y < y0);
                     let page = a.page() as isize;
@@ -741,6 +810,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             LRESULT(0)
         }
+        WM_MOUSEWHEEL if a.performance => LRESULT(0),
         WM_MOUSEWHEEL => {
             let delta = (wp.0 >> 16) as u16 as i16 as isize;
             a.scroll_by(-delta * 3 / 120);
@@ -752,7 +822,11 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             if let Some(c) = char::from_u32(wp.0 as u32).filter(|c| !c.is_control() && !ctrl()) {
                 a.table.filter.push(c);
                 a.table.scroll = 0;
-                a.rebuild();
+                if a.performance {
+                    a.set_tab(false); // rebuilds
+                } else {
+                    a.rebuild();
+                }
             }
             LRESULT(0)
         }

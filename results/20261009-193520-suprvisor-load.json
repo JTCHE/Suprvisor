@@ -1,0 +1,237 @@
+{
+  "target": "suprvisor",
+  "launchMode": "hotkey",
+  "load": true,
+  "date": "2026-10-09T19:35:20.4221731+02:00",
+  "launch": {
+    "firstPaintMs": 29.6882,
+    "vc90Ms": 287.7443,
+    "vc90ContentMs": 27.7838,
+    "runs": [
+      {
+        "FirstPaintMs": 115.4243,
+        "Vc90Ms": 293.6025,
+        "Vc90ContentMs": 115.4243,
+        "Frames": 351,
+        "MissedFrames": 183,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 27.7838,
+        "Vc90Ms": 377.6418,
+        "Vc90ContentMs": 27.7838,
+        "Frames": 515,
+        "MissedFrames": 59,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 20.2207,
+        "Vc90Ms": 280.4888,
+        "Vc90ContentMs": 20.2207,
+        "Frames": 478,
+        "MissedFrames": 29,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 37.0197,
+        "Vc90Ms": 276.7459,
+        "Vc90ContentMs": 17.3617,
+        "Frames": 326,
+        "MissedFrames": 183,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 29.6882,
+        "Vc90Ms": 287.7443,
+        "Vc90ContentMs": 29.6882,
+        "Frames": 464,
+        "MissedFrames": 48,
+        "SameRect": true
+      }
+    ]
+  },
+  "sort": {
+    "medianMs": 16.3996,
+    "maxMs": 20.8919,
+    "missed": 0,
+    "runsMs": [
+      15.885,
+      16.253,
+      19.3565,
+      18.6284,
+      17.9372,
+      17.9074,
+      15.9928,
+      12.1082,
+      20.8919,
+      16.3996
+    ]
+  },
+  "scroll": {
+    "frames": 123,
+    "p50Ms": 19.584,
+    "p99Ms": 40.0127
+  },
+  "visible": {
+    "cpuPctOneCore": 2.96875,
+    "privateMB": 25,
+    "workingSetMB": 52
+  },
+  "sampleLaunchFrames": [
+    {
+      "ms": 0,
+      "changed": 1,
+      "fromStart": 1
+    },
+    {
+      "ms": 7.9,
+      "changed": 0.411,
+      "fromStart": 1
+    },
+    {
+      "ms": 18.4,
+      "changed": 0.121,
+      "fromStart": 1
+    },
+    {
+      "ms": 28.5,
+      "changed": 0.614,
+      "fromStart": 1
+    },
+    {
+      "ms": 38.6,
+      "changed": 0.307,
+      "fromStart": 1
+    },
+    {
+      "ms": 48.6,
+      "changed": 0.308,
+      "fromStart": 1
+    },
+    {
+      "ms": 58.7,
+      "changed": 0.267,
+      "fromStart": 1
+    },
+    {
+      "ms": 69,
+      "changed": 0.619,
+      "fromStart": 1
+    },
+    {
+      "ms": 78.8,
+      "changed": 0.266,
+      "fromStart": 1
+    },
+    {
+      "ms": 88.2,
+      "changed": 0.212,
+      "fromStart": 1
+    },
+    {
+      "ms": 98.7,
+      "changed": 0.37,
+      "fromStart": 1
+    },
+    {
+      "ms": 108.1,
+      "changed": 0.634,
+      "fromStart": 1
+    },
+    {
+      "ms": 118,
+      "changed": 0.286,
+      "fromStart": 1
+    },
+    {
+      "ms": 128.7,
+      "changed": 0.201,
+      "fromStart": 1
+    },
+    {
+      "ms": 138.6,
+      "changed": 0.201,
+      "fromStart": 1
+    },
+    {
+      "ms": 147.5,
+      "changed": 0.626,
+      "fromStart": 1
+    },
+    {
+      "ms": 158.6,
+      "changed": 0.22,
+      "fromStart": 1
+    },
+    {
+      "ms": 167.5,
+      "changed": 0.191,
+      "fromStart": 1
+    },
+    {
+      "ms": 178.2,
+      "changed": 0.183,
+      "fromStart": 1
+    },
+    {
+      "ms": 290.3,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 317.5,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 358.2,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 889,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 1409.6,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 1959.2,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 2469.6,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 2989.3,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 3538.7,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 4078.8,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 4589.1,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 5129.7,
+      "changed": 0.004,
+      "fromStart": 1
+    }
+  ]
+}
