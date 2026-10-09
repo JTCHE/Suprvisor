@@ -1,0 +1,24 @@
+[package]
+name = "suprvisor-core"
+description = "Process and system data collection for Suprvisor. No UI."
+edition.workspace = true
+version.workspace = true
+
+[dependencies.windows]
+workspace = true
+features = [
+    "Wdk_Graphics_Direct3D",
+    "Wdk_System_SystemInformation",
+    "Wdk_System_Threading",
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+    "Win32_System_Kernel",
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+]
+
+[dev-dependencies.windows]
+workspace = true
+features = ["Win32_System_WindowsProgramming"] # QueryThreadCycleTime in the bench

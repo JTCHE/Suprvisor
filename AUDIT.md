@@ -48,3 +48,12 @@ Taskmgr has no hidden state (closed = 0 cost), so the hidden budget is absolute 
 ## When
 After each milestone, and after any change to the collector or the renderer.
 A failed budget means the task is not done.
+
+## Collector cost (M1, `cargo run -p suprvisor-core --release --example bench`)
+Measured 2026-10-09 on the dev machine: 1,070 processes, 43,000 threads, CPU 96% busy (Houdini cook).
+CPU per call, median: `system` 0.85 ms, `refresh` (30 busiest rows) 6.0 ms, `scan` 34 ms, `scan_full` 65 ms.
+- Per-process CPU time needs a walk over the process's threads in the kernel, so cost follows the
+  thread count. `NtQuerySystemInformation` also copies every thread (3.3 MB here), so it is the slowest.
+- Global GPU engine counters cost 1-2.6 M cycles each; only busy engines are read on the fast tick.
+- With a 500 ms fast tick, `scan` every 3 s, `scan_full` every 60 s: about 2.6% of one core
+  (Task Manager: about 50-60%). Above the 1% visible budget on this machine; see open points.
