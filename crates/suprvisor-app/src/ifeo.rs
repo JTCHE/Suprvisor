@@ -17,7 +17,7 @@ const TASKMGR_TASK: &str = r"\Suprvisor\Taskmgr";
 /// Shows the resident window. No answer in 200 ms: starts the real Task Manager, and the
 /// resident process again for the next time.
 pub fn redirect(taskmgr: &[String]) -> Result<()> {
-    if let Ok(h) = unsafe { FindWindowW(crate::CLASS, None) } {
+    if let Ok(h) = unsafe { FindWindowW(crate::class(), None) } {
         let mut pid = 0;
         unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
         let _ = unsafe { AllowSetForegroundWindow(pid) };

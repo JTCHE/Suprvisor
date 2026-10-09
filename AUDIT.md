@@ -110,3 +110,44 @@ What changed the numbers:
 - Tried and dropped: hiding by DWM cloak (the Mica crossfade comes from activation, not from
   showing); `SW_SHOWNA` before activation (no gain); D2D software rendering copied into the
   swapchain through WIC (same CPU as WARP, more code).
+
+## Stress test (2026-10-09)
+`powershell -ExecutionPolicy Bypass -File audit/stress.ps1 [--seconds N] [--only sort,wheel] [--churn N] [--load]`
+posts input straight to the window at machine speed: 40 header clicks/s, 250 wheel notches/s,
+scrollbar thumb and column separator drags, 1 kHz mouse moves, typing, key repeat, tab switches,
+window resize every 10 ms, and all of it mixed. `--churn N` keeps N short-lived processes
+starting and exiting; `--load` loads every core. Each scenario launches a fresh test instance
+(`SUPRVISOR_TEST`: its own window class and settings file, so the user's Suprvisor keeps
+running) with `--inactive` (no focus), parked topmost with a 2x2 px corner on screen: DWM takes no
+frames from a covered window. `SUPRVISOR_TRACE=<file>` makes the app log handler, draw and
+collector timings; the harness matches each input to the first present after its handler.
+
+Results: `results/stress-20261009-211439.log` (before), `results/stress-20261009-222454.log`
+(after), `results/stress-20261009-222143.log` (after, 300-process churn and all cores loaded).
+
+| scenario | handler max before / after (ms) | input-to-frame p99 before / after (ms) |
+|---|---|---|
+| sort | 24.1 / 1.5 | 25.8 / 13.4 |
+| wheel | 25.0 / 1.3 | 19.8 / 18.0 |
+| thumb | 14.8 / 1.2 | 28.6 / 11.0 |
+| hover | 41.0 / 6.5 | – |
+| tabs | 14.2 / 1.8 | 18.3 / 12.5 |
+| columns | 12.6 / 1.4 | 23.0 / 6.8 |
+| resize | 118.7 / 38.4, frame gap 3.6 s / 26 ms | – |
+| everything | 16.0 / 4.4 | 56.2 / 61.1 (21.4 under load) |
+
+Fixes:
+- Present waited for the display inside each paint, and input queued behind it. The swapchain
+  now has a frame-latency waitable object (latency 1); the message loop drains all input, then
+  draws at most one frame when the waitable is signaled. 40 clicks give one paint per frame,
+  not one per click.
+- A dirty flag replaces InvalidateRect per input; WM_PAINT only validates. Inside modal size and
+  menu loops, and in WM_SIZE, the frame is drawn at once.
+- Settings writes wait 1 s after the last change (one timer per burst), not one write per click.
+- A header click takes no mouse capture. SetCapture, ReleaseCapture and SetTimer go into the
+  window manager; when other processes hold it, each call waited 10-110 ms.
+- Show and tab switch no longer force a process scan; resize steps no longer wake the collector.
+- Column resize: the separator moves and only its two neighbours trade width.
+- Left: rare 100-800 ms gaps with no app work in them (no handler, draw or present), under a busy
+  machine. The driver or the compositor was not scheduled; DWM itself composed every 10 ms when
+  measured (`DwmGetCompositionTimingInfo`).

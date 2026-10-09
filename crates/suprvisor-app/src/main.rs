@@ -2,6 +2,7 @@
 //! Ctrl+Shift+Esc shows it (keyboard hook, hotkey.rs), and so does running suprvisor.exe again.
 //!   suprvisor.exe                 show (start the resident process if none runs)
 //!   suprvisor.exe --resident      start hidden (the logon task)
+//!   suprvisor.exe --inactive      start shown without taking the focus (audit/stress.ps1)
 //!   suprvisor.exe --hide          hide
 //!   suprvisor.exe --exit          quit the resident process
 //!   suprvisor.exe --ifeo ...      run by Windows in place of taskmgr.exe (ifeo.rs)
@@ -15,6 +16,7 @@ mod settings;
 mod shell;
 mod table;
 mod theme;
+mod trace;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -24,7 +26,7 @@ use std::time::{Duration, Instant};
 use suprvisor_core::{Collector, Proc, System};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Dwm::*;
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT, ScreenToClient, UpdateWindow};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT, ScreenToClient};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::Controls::{MARGINS, WM_MOUSELEAVE};
@@ -37,13 +39,22 @@ use windows::core::{HSTRING, PCWSTR, Result, w};
 use render::{BAR, HEAD, Hot, ROW, SEARCH_Y, TITLE, TOP};
 use table::{COLS, Key, Table};
 
-const CLASS: PCWSTR = w!("Suprvisor");
+/// The window class, also the single-instance key. SUPRVISOR_TEST (audit/stress.ps1) gives a test
+/// instance its own, so it runs next to the user's instance and leaves it alone.
+fn class() -> PCWSTR {
+    if test() { w!("SuprvisorTest") } else { w!("Suprvisor") }
+}
+
+pub fn test() -> bool {
+    std::env::var_os("SUPRVISOR_TEST").is_some()
+}
 const WM_APP_SHOW: u32 = WM_APP + 1;
 const WM_APP_HIDE: u32 = WM_APP + 2;
 const WM_APP_EXIT: u32 = WM_APP + 3;
 const WM_APP_DATA: u32 = WM_APP + 4; // the collector thread has a new snapshot
 const WM_APP_TRAY: u32 = WM_APP + 5;
 const WM_APP_HOTKEY: u32 = WM_APP + 6; // Ctrl+Shift+Esc, from the keyboard hook
+const TIMER_SAVE: usize = 1;
 const MENU_SHOW: usize = 1;
 const MENU_EXIT: usize = 2;
 const MENU_END: usize = 10;
@@ -71,7 +82,7 @@ enum Signal {
 enum Drag {
     None,
     Header(table::Col),      // pressed: sorts on release over the same header, like a click
-    Column(usize, f32, f32), // numeric column, mouse x and width at the start
+    Column(usize, f32, [f32; 6], f32), // separator left of numeric column; mouse x, widths, Name width at the start
     Thumb(f32),              // mouse y minus the thumb top
 }
 
@@ -90,6 +101,9 @@ struct App {
     focus: bool,       // the search box shows the keyboard focus: typing anywhere filters
     hot: Hot,
     caption_down: u32, // caption button pressed (HTCLOSE...), 0 for none
+    save_due: Option<Instant>, // settings changed: write them at this time (TIMER_SAVE checks)
+    dirty: bool,       // a frame is due (the message loop draws it)
+    modal: u32,        // inside a size/move or menu loop, which does not return to ours: paint at once
     drag: Drag,
     taskbar_created: u32,
     shown: bool,
@@ -113,7 +127,7 @@ fn main() -> Result<()> {
     };
     // A resident instance exists: signal it and leave. This process got the user's input, so it may
     // pass the right to take the foreground to the resident one.
-    if let Ok(existing) = unsafe { FindWindowW(CLASS, None) } {
+    if let Ok(existing) = unsafe { FindWindowW(class(), None) } {
         if resident {
             return Ok(());
         }
@@ -137,7 +151,7 @@ fn main() -> Result<()> {
         hInstance: instance.into(),
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
         hIcon: unsafe { LoadIconW(None, IDI_APPLICATION)? },
-        lpszClassName: CLASS,
+        lpszClassName: class(),
         ..Default::default()
     };
     unsafe { RegisterClassExW(&wc) };
@@ -161,6 +175,9 @@ fn main() -> Result<()> {
         focus: false,
         hot: Hot::None,
         caption_down: 0,
+        save_due: None,
+        dirty: false,
+        modal: 0,
         settings,
         drag: Drag::None,
         taskbar_created: unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) },
@@ -170,7 +187,7 @@ fn main() -> Result<()> {
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_NOREDIRECTIONBITMAP, // all content comes through DirectComposition (render.rs)
-            CLASS,
+            class(),
             w!("Suprvisor"),
             WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT,
@@ -209,18 +226,38 @@ fn main() -> Result<()> {
             let _ = unsafe { ShowWindow(hwnd, SW_SHOWMAXIMIZED) };
         }
         if let Some(a) = self::app(hwnd) {
-            a.show();
+            a.show_with(arg != Some("--inactive"));
         }
     }
 
+    // Message loop. Input never waits for the display: all pending messages run first, then at most
+    // one frame, drawn when the swapchain can take it (its waitable object, render.rs). Many
+    // changes between two frames cost one paint.
     let mut m = MSG::default();
-    while unsafe { GetMessageW(&mut m, None, 0, 0) }.as_bool() {
-        unsafe {
-            let _ = TranslateMessage(&m);
-            DispatchMessageW(&m);
+    loop {
+        while unsafe { PeekMessageW(&mut m, None, 0, 0, PM_REMOVE) }.as_bool() {
+            if m.message == WM_QUIT {
+                return Ok(());
+            }
+            unsafe {
+                let _ = TranslateMessage(&m);
+                DispatchMessageW(&m);
+            }
+        }
+        let Some(a) = self::app(hwnd) else { return Ok(()) };
+        a.dirty &= a.shown; // hidden: nothing to draw (the swapchain is made at the first show)
+        let wait = if a.dirty { a.renderer.waitable() } else { None };
+        if a.dirty && wait.is_none() {
+            a.paint(); // no swapchain yet: this paint makes it
+            continue;
+        }
+        let handles = wait.as_slice();
+        let r = unsafe { MsgWaitForMultipleObjectsEx(Some(handles), INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE) };
+        if !handles.is_empty() && r == WAIT_OBJECT_0 {
+            a.renderer.ready = true; // the wait took the frame slot
+            a.paint();
         }
     }
-    Ok(())
 }
 
 /// Collector thread. Hidden, or on the Performance tab: machine totals once per second (the graph
@@ -248,19 +285,25 @@ fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec
         let (mut shown, mut table, mut tick) = (false, table, 0u64);
         let (mut primed, mut quick) = (false, false); // quick: the next list skips the kernel list
         let (mut scanned, mut full, mut engines, mut sampled): (Option<Instant>, Option<Instant>, Option<Instant>, Option<Instant>) = (None, None, None, None);
+        let mut next = Instant::now();
         loop {
-            match signal.recv_timeout(Duration::from_millis(if shown && table { 500 } else { 1000 })) {
+            match signal.recv_timeout(next.saturating_duration_since(Instant::now())) {
                 Ok(Signal::Visible(v)) => {
-                    if v && !shown {
-                        (scanned, quick) = (None, true); // the list is stale after a hidden period
+                    // The list is stale after a hidden period: the next scan (now, if the last one is
+                    // older than SCAN) skips the slow kernel list. Not a forced scan: a show/hide
+                    // spammer would otherwise keep this thread scanning.
+                    let now = v && !shown;
+                    (quick, shown) = (quick || now, v);
+                    if !now {
+                        continue; // a resize step or a hide: the next tick is soon enough
                     }
-                    shown = v;
                 }
                 Ok(Signal::Table(t)) => {
-                    if t && !table {
-                        (scanned, quick) = (None, true); // not listed while the Performance tab was open
+                    let now = t && !table; // not listed while the Performance tab was open
+                    (quick, table) = (quick || now, t);
+                    if !now {
+                        continue;
                     }
-                    table = t;
                 }
                 Ok(Signal::Rescan) => scanned = None,
                 Err(RecvTimeoutError::Timeout) => {}
@@ -271,13 +314,19 @@ fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec
             if !listing {
             } else if scanned.is_none_or(|t| t.elapsed() >= SCAN) {
                 let quick = std::mem::take(&mut quick) && primed;
+                let t = Instant::now();
                 procs = if !quick && full.is_none_or(|t| t.elapsed() >= FULL) {
                     full = Some(Instant::now());
-                    c.scan_full().unwrap_or_else(|_| c.scan())
+                    let p = c.scan_full().unwrap_or_else(|_| c.scan());
+                    trace::record("scan_full", t, p.len() as u64);
+                    p
                 } else {
-                    c.scan()
+                    let p = c.scan();
+                    trace::record("scan", t, p.len() as u64);
+                    p
                 };
                 scanned = Some(Instant::now());
+                let t = Instant::now();
                 index = procs.iter().enumerate().map(|(i, p)| ((p.pid, p.create_time), i)).collect();
                 snap.titles = Arc::new(shell::window_titles());
                 let mut icons = None;
@@ -292,22 +341,27 @@ fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec
                 if let Some(i) = icons {
                     snap.icons = Arc::new(i);
                 }
+                trace::record("titles_icons", t, snap.icons.len() as u64);
             } else {
                 // Disk I/O is slow to read (~150 k cycles per process): every 3rd tick.
                 let io = tick % 3 == 0;
                 let keys = wanted.lock().unwrap().clone(); // do not hold the lock: the UI thread writes it
+                let t = Instant::now();
                 for k in &keys {
                     if let Some(&i) = index.get(k) {
                         c.refresh(std::slice::from_mut(&mut procs[i]), io);
                     }
                 }
+                trace::record("refresh", t, keys.len() as u64);
             }
             // Idle GPU engines cost ~10 ms to read: every 3 s while visible, every 60 s while hidden.
             let all = engines.is_none_or(|t| t.elapsed() >= if shown { SCAN } else { FULL });
             if all {
                 engines = Some(Instant::now());
             }
+            let t = Instant::now();
             snap.system = c.system(all);
+            trace::record("system", t, all as u64);
             if sampled.is_none_or(|t| t.elapsed() >= Duration::from_millis(900)) {
                 sampled = Some(Instant::now());
                 if history.len() == HISTORY {
@@ -323,6 +377,7 @@ fn spawn_collector(hwnd: HWND, data: Arc<Mutex<Snapshot>>, wanted: Arc<Mutex<Vec
             if shown || !std::mem::replace(&mut primed, true) {
                 let _ = unsafe { PostMessageW(Some(HWND(hwnd as *mut _)), WM_APP_DATA, WPARAM(0), LPARAM(0)) };
             }
+            next = Instant::now() + Duration::from_millis(if shown && table { 500 } else { 1000 });
         }
     });
 }
@@ -367,10 +422,6 @@ fn app<'a>(hwnd: HWND) -> Option<&'a mut App> {
 
 fn dpi(hwnd: HWND) -> u32 {
     unsafe { GetDpiForWindow(hwnd) }
-}
-
-fn invalidate(hwnd: HWND) {
-    let _ = unsafe { InvalidateRect(Some(hwnd), None, false) };
 }
 
 /// Resize border height in pixels: the part of the title bar that resizes the window.
@@ -476,8 +527,38 @@ impl App {
         let max = self.table.rows.len().saturating_sub(self.page());
         self.table.scroll = self.table.scroll.min(max);
         let s = self.table.scroll;
-        *self.wanted.lock().unwrap() = self.table.keys(s..s + self.page() + 1);
-        invalidate(self.hwnd);
+        let keys = self.table.keys(s..s + self.page() + 1);
+        *self.wanted.lock().unwrap() = keys;
+        self.dirty = true; // a flag, not InvalidateRect: no call into the window manager per input
+    }
+
+    fn paint(&mut self) {
+        self.dirty = false;
+        let frame = render::Frame {
+            table: &self.table,
+            system: &self.snap.system,
+            icons: &self.snap.icons,
+            widths: &self.settings.widths,
+            processes: self.snap.procs.len(),
+            performance: self.performance,
+            history: &self.snap.history,
+            nav_open: self.nav_open,
+            focus: self.focus,
+            hot: self.hot,
+            can_end: self.can_end(),
+            maximized: unsafe { IsZoomed(self.hwnd) }.as_bool(),
+        };
+        let _ = self.renderer.paint(self.hwnd, dpi(self.hwnd), &self.theme, &frame);
+    }
+
+    /// Writes the settings file a second after the last change: a burst of sort clicks or a column
+    /// drag writes it once, and no click waits on the disk (or on an antivirus scan of the file).
+    /// The timer is armed once per burst: SetTimer goes into the window manager, which can make
+    /// the UI thread wait when other processes hold it.
+    fn save_later(&mut self) {
+        if self.save_due.replace(Instant::now() + Duration::from_secs(1)).is_none() {
+            unsafe { SetTimer(Some(self.hwnd), TIMER_SAVE, 250, None) };
+        }
     }
 
     /// Takes the collector's latest snapshot.
@@ -486,7 +567,7 @@ impl App {
         self.table.procs = self.snap.procs.clone();
         self.table.titles = self.snap.titles.clone();
         if self.performance {
-            invalidate(self.hwnd);
+            self.dirty = true;
         } else {
             self.rebuild();
         }
@@ -495,14 +576,14 @@ impl App {
     fn set_hot(&mut self, hot: Hot) {
         if hot != self.hot {
             self.hot = hot;
-            invalidate(self.hwnd);
+            self.dirty = true;
         }
     }
 
     fn set_focus(&mut self, focus: bool) {
         if focus != self.focus {
             self.focus = focus;
-            invalidate(self.hwnd);
+            self.dirty = true;
         }
     }
 
@@ -512,7 +593,9 @@ impl App {
     }
 
     fn rebuild(&mut self) {
+        let t = Instant::now();
         self.table.rebuild();
+        trace::record("rebuild", t, self.table.rows.len() as u64);
         self.changed();
     }
 
@@ -540,7 +623,7 @@ impl App {
         self.performance = performance;
         let _ = self.signal.send(Signal::Table(!performance));
         if performance {
-            invalidate(self.hwnd);
+            self.dirty = true;
         } else {
             self.rebuild();
         }
@@ -558,14 +641,19 @@ impl App {
     }
 
     fn show(&mut self) {
+        self.show_with(true);
+    }
+
+    fn show_with(&mut self, activate: bool) {
         if !self.shown {
             self.load(); // the collector kept the totals current while hidden, without telling the UI
         }
         unsafe {
             // SW_SHOW leaves a minimized window minimized, and the foreground request then only
             // flashes its taskbar button.
-            let _ = ShowWindow(self.hwnd, if IsIconic(self.hwnd).as_bool() { SW_RESTORE } else { SW_SHOW });
-            if !SetForegroundWindow(self.hwnd).as_bool() || GetForegroundWindow() != self.hwnd {
+            let cmd = if IsIconic(self.hwnd).as_bool() { SW_RESTORE } else if activate { SW_SHOW } else { SW_SHOWNOACTIVATE };
+            let _ = ShowWindow(self.hwnd, cmd);
+            if activate && (!SetForegroundWindow(self.hwnd).as_bool() || GetForegroundWindow() != self.hwnd) {
                 // Foreground lock: after the hook swallowed the key, this process did not get the
                 // last input. Joining the foreground thread's input queue lifts the lock.
                 let fg = GetWindowThreadProcessId(GetForegroundWindow(), None);
@@ -643,7 +731,7 @@ impl App {
         if popup(self.hwnd, &[(MENU_GROUPED, flags, "Group by type")]) == MENU_GROUPED {
             self.table.grouped = !self.table.grouped;
             self.rebuild();
-            self.save();
+            self.save_later();
         }
     }
 
@@ -733,6 +821,38 @@ fn popup(hwnd: HWND, items: &[(usize, MENU_ITEM_FLAGS, &str)]) -> usize {
 }
 
 extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    let t = Instant::now();
+    let c0 = thread_kcycles();
+    let r = handle(hwnd, msg, wp, lp);
+    let name = match msg {
+        WM_PAINT => "WM_PAINT",
+        WM_MOUSEMOVE => "WM_MOUSEMOVE",
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => "WM_LBUTTONDOWN",
+        WM_LBUTTONUP => "WM_LBUTTONUP",
+        WM_MOUSEWHEEL => "WM_MOUSEWHEEL",
+        WM_KEYDOWN => "WM_KEYDOWN",
+        WM_CHAR => "WM_CHAR",
+        WM_SIZE => "WM_SIZE",
+        WM_APP_DATA => "WM_APP_DATA",
+        WM_APP_SHOW | WM_APP_HOTKEY => "WM_APP_SHOW",
+        _ => return r,
+    };
+    trace::record(name, t, thread_kcycles() - c0);
+    if msg == WM_DESTROY {
+        trace::flush();
+    }
+    r
+}
+
+/// CPU cycles of this thread, in thousands: the trace's count for a message, so a slow handler
+/// shows whether it ran or waited.
+fn thread_kcycles() -> u64 {
+    let mut c = 0;
+    let _ = unsafe { windows::Win32::System::WindowsProgramming::QueryThreadCycleTime(GetCurrentThread(), &mut c) };
+    c / 1000
+}
+
+fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     if msg == WM_NCCREATE {
         let cs = unsafe { &*(lp.0 as *const CREATESTRUCTW) };
         let a = cs.lpCreateParams as *mut App;
@@ -746,22 +866,28 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             unsafe { BeginPaint(hwnd, &mut ps) };
-            let frame = render::Frame {
-                table: &a.table,
-                system: &a.snap.system,
-                icons: &a.snap.icons,
-                widths: &a.settings.widths,
-                processes: a.snap.procs.len(),
-                performance: a.performance,
-                history: &a.snap.history,
-                nav_open: a.nav_open,
-                focus: a.focus,
-                hot: a.hot,
-                can_end: a.can_end(),
-                maximized: unsafe { IsZoomed(hwnd) }.as_bool(),
-            };
-            let _ = a.renderer.paint(hwnd, dpi(hwnd), &a.theme, &frame);
             let _ = unsafe { EndPaint(hwnd, &ps) };
+            if a.modal > 0 {
+                a.paint();
+            } else {
+                a.dirty = true; // the message loop draws it once the input is handled
+            }
+            LRESULT(0)
+        }
+        WM_ENTERSIZEMOVE | WM_ENTERMENULOOP => {
+            a.modal += 1;
+            LRESULT(0)
+        }
+        WM_EXITSIZEMOVE | WM_EXITMENULOOP => {
+            a.modal = a.modal.saturating_sub(1);
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == TIMER_SAVE => {
+            if a.save_due.is_none_or(|t| Instant::now() >= t) {
+                a.save_due = None;
+                let _ = unsafe { KillTimer(Some(hwnd), TIMER_SAVE) };
+                a.save();
+            }
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1), // Direct2D paints everything
@@ -771,6 +897,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             let visible = wp.0 as u32 != SIZE_MINIMIZED && unsafe { IsWindowVisible(hwnd) }.as_bool();
             let _ = a.signal.send(Signal::Visible(visible));
             a.changed();
+            if visible {
+                a.paint(); // the frame must match the new size now, also during a live resize
+            }
             LRESULT(0)
         }
         WM_DPICHANGED => {
@@ -790,9 +919,9 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         WM_MOUSEMOVE => {
             let (x, y) = a.point(lp);
             match a.drag {
-                Drag::Column(i, x0, w0) => {
-                    a.settings.widths[i] = (w0 + x0 - x).clamp(32.0, 600.0);
-                    invalidate(hwnd);
+                Drag::Column(i, x0, start, name) => {
+                    a.settings.widths = render::resize(start, i, x - x0, name);
+                    a.dirty = true;
                 }
                 Drag::Thumb(grab) => {
                     let (_, h) = a.size();
@@ -821,7 +950,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     };
                     if hover != a.table.hover {
                         a.table.hover = hover;
-                        invalidate(hwnd);
+                        a.dirty = true;
                     }
                     let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
                     let _ = unsafe { TrackMouseEvent(&mut t) };
@@ -830,9 +959,12 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             LRESULT(0)
         }
         WM_MOUSELEAVE => {
+            if matches!(a.drag, Drag::Header(_)) {
+                a.drag = Drag::None; // pressed without capture: the release will not come here
+            }
             a.table.hover = None;
             a.hot = Hot::None;
-            invalidate(hwnd);
+            a.dirty = true;
             LRESULT(0)
         }
         // The title bar is client area (WM_NCCALCSIZE): Windows still moves, snaps and resizes the
@@ -913,13 +1045,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             a.set_focus(matches!(hit, Hit::Search));
             match hit {
                 Hit::Edge(i) => {
-                    a.drag = Drag::Column(i, x, a.settings.widths[i]);
+                    let (w, _) = a.size();
+                    let (n0, n1) = render::columns(render::nav_width(a.nav_open), w, &a.settings.widths)[0];
+                    a.drag = Drag::Column(i, x, a.settings.widths, n1 - n0);
                     unsafe { SetCapture(hwnd) };
                 }
-                Hit::Header(c) => {
-                    a.drag = Drag::Header(c);
-                    unsafe { SetCapture(hwnd) };
-                }
+                // No capture for a header press: a click is the common case, and SetCapture and
+                // ReleaseCapture go into the window manager, which can make the thread wait when
+                // other processes hold it. A release outside the window does not sort.
+                Hit::Header(c) => a.drag = Drag::Header(c),
                 Hit::Row(i, chevron) => {
                     a.select(i);
                     if chevron || msg == WM_LBUTTONDBLCLK {
@@ -936,7 +1070,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 Hit::Nav(0) => {
                     a.nav_open = !a.nav_open;
                     a.changed();
-                    a.save();
+                    a.save_later();
                 }
                 Hit::Nav(k) => a.set_tab(k == 2),
                 Hit::EndTask if a.can_end() => a.end_task(),
@@ -956,17 +1090,15 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         WM_LBUTTONUP => {
             let (x, y) = a.point(lp);
             match a.drag {
-                Drag::Column(..) => a.save(),
+                Drag::Column(..) => a.save_later(),
                 Drag::Header(c) if matches!(a.hit(x, y), Hit::Header(h) if h == c) => {
                     a.table.sort_by(c);
                     a.changed();
-                    let _ = unsafe { UpdateWindow(hwnd) }; // paint now; the settings file can wait
-                    a.save();
+                    a.save_later();
                 }
                 _ => {}
             }
-            if !matches!(a.drag, Drag::None) {
-                a.drag = Drag::None;
+            if matches!(std::mem::replace(&mut a.drag, Drag::None), Drag::Column(..) | Drag::Thumb(_)) {
                 let _ = unsafe { ReleaseCapture() };
             }
             LRESULT(0)
@@ -1045,7 +1177,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
         WM_SETTINGCHANGE => {
             a.theme = theme::Theme::current();
             style_window(hwnd, a.theme.dark);
-            invalidate(hwnd);
+            a.dirty = true;
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -1055,6 +1187,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 drop(Box::from_raw(a as *mut App));
                 PostQuitMessage(0);
+                trace::flush();
             }
             LRESULT(0)
         }

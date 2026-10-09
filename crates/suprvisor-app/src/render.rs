@@ -4,7 +4,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use suprvisor_core::System;
-use windows::Win32::Foundation::{HMODULE, HWND, RECT};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
@@ -13,6 +13,7 @@ use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
+use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{Interface, PCWSTR, Result, w};
 
@@ -60,6 +61,23 @@ pub fn columns(x0: f32, width: f32, widths: &[f32; 6]) -> [(f32, f32); 7] {
     }
     out[0] = (x0 + PAD, x);
     out
+}
+
+/// Widths after dragging the separator at the left edge of numeric column `i` by `d` DIPs, from
+/// `start`. Only that separator moves: the columns on its two sides trade width. The first
+/// separator trades with Name, which keeps at least NAME_MIN of its `name` width.
+pub fn resize(start: [f32; 6], i: usize, d: f32, name: f32) -> [f32; 6] {
+    const MIN: f32 = 32.0;
+    const NAME_MIN: f32 = 120.0;
+    let mut w = start;
+    if i == 0 {
+        w[0] = (start[0] - d).clamp(MIN, start[0].max(MIN) + (name - NAME_MIN).max(0.0));
+    } else {
+        let d = d.clamp(-(start[i - 1] - MIN).max(0.0), (start[i] - MIN).max(0.0));
+        w[i - 1] += d;
+        w[i] -= d;
+    }
+    w
 }
 
 /// Search box left and right edges: centered in the title bar, between the app name and the
@@ -139,6 +157,9 @@ pub struct Renderer {
     dim: u32, // color baked into cached layouts (the dimmed detail text)
     target: Option<Target>,                         // created on first paint, dropped when the device is lost
     bitmaps: HashMap<String, Option<ID2D1Bitmap1>>, // per exe path; belong to the target
+    /// The caller already waited on `waitable()`: the frame slot is taken.
+    pub ready: bool,
+    started: std::time::Instant, // this paint, for the trace
 }
 
 /// A flip-model swapchain shown through DirectComposition. DWM picks a flip-model frame up at
@@ -147,6 +168,9 @@ pub struct Renderer {
 struct Target {
     dc: ID2D1DeviceContext,
     swapchain: IDXGISwapChain1,
+    /// Signaled when the swapchain can take a frame. Waiting on it before drawing replaces the
+    /// wait inside Present, so the UI thread waits only where it can also take input.
+    waitable: HANDLE,
     dpi: u32,
     _composition: (IDCompositionDevice, IDCompositionTarget, IDCompositionVisual),
 }
@@ -178,10 +202,16 @@ impl Target {
             BufferCount: 2,
             SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
             AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
+            Flags: DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT.0 as u32,
             ..Default::default()
         };
         let dxgi_factory: IDXGIFactory2 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
         let swapchain = unsafe { dxgi_factory.CreateSwapChainForComposition(&dxgi, &desc, None)? };
+        let waitable = unsafe {
+            let s: IDXGISwapChain2 = swapchain.cast()?;
+            s.SetMaximumFrameLatency(1)?;
+            s.GetFrameLatencyWaitableObject()
+        };
         let composition: IDCompositionDevice = unsafe { DCompositionCreateDevice(&dxgi)? };
         let target = unsafe { composition.CreateTargetForHwnd(hwnd, true)? };
         let visual = unsafe { composition.CreateVisual()? };
@@ -191,7 +221,7 @@ impl Target {
             composition.Commit()?;
         }
         let dc = unsafe { factory.CreateDevice(&dxgi)?.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
-        let t = Self { dc, swapchain, dpi, _composition: (composition, target, visual) };
+        let t = Self { dc, swapchain, waitable, dpi, _composition: (composition, target, visual) };
         t.bind()?;
         Ok(t)
     }
@@ -217,9 +247,15 @@ impl Target {
     fn resize(&self, width: u32, height: u32) -> Result<()> {
         unsafe {
             self.dc.SetTarget(None);
-            self.swapchain.ResizeBuffers(0, width.max(1), height.max(1), DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))?;
+            self.swapchain.ResizeBuffers(0, width.max(1), height.max(1), DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)?;
         }
         self.bind()
+    }
+}
+
+impl Drop for Target {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.waitable) };
     }
 }
 
@@ -412,6 +448,8 @@ impl Renderer {
             factory,
             target: None,
             bitmaps: HashMap::new(),
+            ready: false,
+            started: std::time::Instant::now(),
         })
     }
 
@@ -428,6 +466,11 @@ impl Renderer {
             t.dpi = dpi;
             unsafe { t.dc.SetDpi(dpi as f32, dpi as f32) };
         }
+    }
+
+    /// The swapchain's frame slot object, once the swapchain exists.
+    pub fn waitable(&self) -> Option<HANDLE> {
+        self.target.as_ref().map(|t| t.waitable)
     }
 
     fn target(&mut self, hwnd: HWND, dpi: u32) -> Result<ID2D1DeviceContext> {
@@ -634,7 +677,13 @@ impl Renderer {
     }
 
     pub fn paint(&mut self, hwnd: HWND, dpi: u32, theme: &Theme, f: &Frame) -> Result<()> {
+        self.started = std::time::Instant::now();
         let t = self.target(hwnd, dpi)?;
+        if !std::mem::take(&mut self.ready) {
+            // Painting outside the message loop (resize, menus): take the frame slot here. A
+            // timeout, so a stalled compositor cannot hang the window.
+            unsafe { WaitForSingleObject(self.waitable().unwrap(), 100) };
+        }
         let size = unsafe { t.GetSize() };
         let dim = theme.text_secondary;
         let brush = |c: u32, a: f32| unsafe { t.CreateSolidColorBrush(&color(c, a), None) };
@@ -684,12 +733,14 @@ impl Renderer {
                 };
                 // The sorted column: filled header, full-contrast total, a band down the rows.
                 // The other totals are dimmed, so the sorted one reads first.
+                // Name's fills start at the content layer's edge, not at its text inset.
                 let sorted = tb.sort == *c;
+                let fx0 = if i == 0 { x0 - PAD } else { x0 };
                 if sorted {
-                    t.FillRectangle(&rect(x0, TOP, x1, size.height), &b.band);
+                    t.FillRectangle(&rect(fx0, TOP, x1, size.height), &b.band);
                 }
                 if sorted || f.hot == Hot::Header(*c) {
-                    t.FillRectangle(&rect(x0, TOP, x1, TOP + HEAD), if sorted && f.hot == Hot::Header(*c) { selected } else { hover });
+                    t.FillRectangle(&rect(fx0, TOP, x1, TOP + HEAD), if sorted && f.hot == Hot::Header(*c) { selected } else { hover });
                 }
                 if i > 0 {
                     t.FillRectangle(&rect(x0, TOP + 8.0, x0 + 1.0, TOP + HEAD - 8.0), line);
@@ -778,8 +829,14 @@ impl Renderer {
     }
 
     fn present(&mut self, t: &ID2D1DeviceContext) -> Result<()> {
+        crate::trace::record("draw", self.started, self.layouts.len() as u64);
         self.prev = std::mem::take(&mut self.layouts);
-        let presented = unsafe { t.EndDraw(None, None).and_then(|_| self.target.as_ref().unwrap().swapchain.Present(1, DXGI_PRESENT(0)).ok()) };
+        let at = std::time::Instant::now();
+        let drawn = unsafe { t.EndDraw(None, None) };
+        crate::trace::record("enddraw", at, 0);
+        let at = std::time::Instant::now();
+        let presented = drawn.and_then(|_| unsafe { self.target.as_ref().unwrap().swapchain.Present(1, DXGI_PRESENT(0)).ok() });
+        crate::trace::record("present", at, 0);
         if presented.is_err() {
             self.target = None; // device lost: recreate on the next paint
         }
@@ -789,6 +846,19 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resize_moves_one_separator() {
+        let w = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0];
+        // CPU|Memory 20 right: CPU wider, Memory narrower, the rest still.
+        assert_eq!(super::resize(w, 1, 20.0, 400.0), [92.0, 76.0, 64.0, 96.0, 128.0, 64.0]);
+        // Too far: Memory stops at the minimum.
+        assert_eq!(super::resize(w, 1, 500.0, 400.0)[..2], [136.0, 32.0]);
+        // Name|CPU 30 left: CPU wider (Name gives the space), never Name under 120.
+        assert_eq!(super::resize(w, 0, -30.0, 400.0)[0], 102.0);
+        assert_eq!(super::resize(w, 0, -1000.0, 400.0)[0], 352.0);
+        assert_eq!(super::resize(w, 0, 1000.0, 400.0)[0], 32.0);
+    }
+
     #[test]
     fn graph_scale_is_readable() {
         assert_eq!(super::nice(0.0), 1.0);

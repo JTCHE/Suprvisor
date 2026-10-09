@@ -14,6 +14,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using static Native;
 
+if (args.FirstOrDefault() == "stress") return Stress.Run(args);
+
 string Arg(string name) => args.SkipWhile(a => a != name).Skip(1).FirstOrDefault();
 var target = Arg("--target") ?? "taskmgr";
 bool tm = target == "taskmgr";

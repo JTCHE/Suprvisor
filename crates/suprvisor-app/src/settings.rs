@@ -25,7 +25,7 @@ impl Default for Settings {
 }
 
 fn file() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("APPDATA")?).join("suprvisor").join("settings.ini"))
+    Some(PathBuf::from(std::env::var_os("APPDATA")?).join(if crate::test() { "suprvisor-test" } else { "suprvisor" }).join("settings.ini"))
 }
 
 fn nums<T: std::str::FromStr, const N: usize>(v: &str) -> Option<[T; N]> {
