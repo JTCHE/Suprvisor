@@ -480,6 +480,18 @@ impl App {
         invalidate(self.hwnd);
     }
 
+    /// Takes the collector's latest snapshot.
+    fn load(&mut self) {
+        self.snap = self.data.lock().unwrap().clone();
+        self.table.procs = self.snap.procs.clone();
+        self.table.titles = self.snap.titles.clone();
+        if self.performance {
+            invalidate(self.hwnd);
+        } else {
+            self.rebuild();
+        }
+    }
+
     fn set_hot(&mut self, hot: Hot) {
         if hot != self.hot {
             self.hot = hot;
@@ -546,6 +558,9 @@ impl App {
     }
 
     fn show(&mut self) {
+        if !self.shown {
+            self.load(); // the collector kept the totals current while hidden, without telling the UI
+        }
         unsafe {
             // SW_SHOW leaves a minimized window minimized, and the foreground request then only
             // flashes its taskbar button.
@@ -769,14 +784,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
         }
         WM_APP_DATA => {
-            a.snap = a.data.lock().unwrap().clone();
-            a.table.procs = a.snap.procs.clone();
-            a.table.titles = a.snap.titles.clone();
-            if a.performance {
-                invalidate(hwnd);
-            } else {
-                a.rebuild();
-            }
+            a.load();
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
