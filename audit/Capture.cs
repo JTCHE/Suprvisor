@@ -87,12 +87,21 @@ public sealed class Capture : IDisposable
         return t;
     }
 
-    public static double Diff(uint[] a, uint[] b)
+    // Fraction of pixels that differ. With `tolerance`, a pixel counts only when a channel moves by
+    // more than that (of 255): text and shapes do; a backdrop tint shift (Mica's active/inactive
+    // crossfade) does not.
+    public static double Diff(uint[] a, uint[] b, int tolerance = 0)
     {
         int n = 0;
-        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) n++;
+        for (int i = 0; i < a.Length; i++)
+            if (a[i] != b[i] && (tolerance == 0 || Far(a[i], b[i], tolerance))) n++;
         return (double)n / a.Length;
     }
+
+    static bool Far(uint x, uint y, int t) =>
+        Math.Abs((int)(x & 0xFF) - (int)(y & 0xFF)) > t ||
+        Math.Abs((int)((x >> 8) & 0xFF) - (int)((y >> 8) & 0xFF)) > t ||
+        Math.Abs((int)((x >> 16) & 0xFF) - (int)((y >> 16) & 0xFF)) > t;
 
     public List<Frame> Snapshot() { lock (Frames) return Frames.ToList(); }
 

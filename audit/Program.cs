@@ -28,6 +28,7 @@ if (tm && !new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBu
     return 2;
 }
 SetProcessDpiAwarenessContext(-4); // per-monitor v2: all rects in physical pixels
+timeBeginPeriod(1); // Thread.Sleep(10) sleeps ~16 ms at the default 15.6 ms timer resolution
 var only = Arg("--only");
 int runs = args.SkipWhile(a => a != "--runs").Skip(1).Select(int.Parse).FirstOrDefault(5);
 // Name column header, in physical px from the window's top-left. Each click reverses the whole list
@@ -82,13 +83,15 @@ object Suite(bool withLoad)
         var thumbs = frames.Where(f => f.Thumb != null).ToList();
         var final = thumbs[^1].Thumb!;
         int lastFar = thumbs.FindLastIndex(f => Capture.Diff(f.Thumb!, final) > 0.10);
+        int lastFarContent = thumbs.FindLastIndex(f => Capture.Diff(f.Thumb!, final, tolerance: 24) > 0.10);
         // The window appearing changes most of the rect from one frame to the next.
         var firstPaint = frames.FirstOrDefault(f => f.Changed > 0.02);
         var vc90 = lastFar + 1 < thumbs.Count ? thumbs[lastFar + 1] : null;
+        var vc90Content = lastFarContent + 1 < thumbs.Count ? thumbs[lastFarContent + 1] : null;
         double Rel(Frame? f) => f == null ? double.NaN : Capture.Ms(f.Time - t0);
-        launches.Add(new LaunchRun(Rel(firstPaint), Rel(vc90), frames.Count, frames.Sum(f => f.Accumulated - 1),
+        launches.Add(new LaunchRun(Rel(firstPaint), Rel(vc90), Rel(vc90Content), frames.Count, frames.Sum(f => f.Accumulated - 1),
             WindowRect(FindWindow(windowClass, null)).Equals(rect)));
-        Console.WriteLine($"launch {run}: first paint {Rel(firstPaint):F0} ms, VC90 {Rel(vc90):F0} ms");
+        Console.WriteLine($"launch {run}: first paint {Rel(firstPaint):F0} ms, VC90 {Rel(vc90):F0} ms, VC90 content {Rel(vc90Content):F0} ms");
         Console.WriteLine("  frames: " + string.Join(" ", frames.Where(f => f.Changed > 0).Take(8).Select(f => $"{Rel(f):F0}ms:{f.Changed:F2}/{f.FromStart:F2}")));
         sample ??= frames;
         if (run < runs - 1) Kill();
@@ -146,7 +149,7 @@ object Suite(bool withLoad)
     return new
     {
         target, launchMode = tm ? "hotkey" : "exe (IFEO stub path)", load = withLoad, date = DateTime.Now,
-        launch = new { firstPaintMs = Median(launches.Select(l => l.FirstPaintMs)), vc90Ms = Median(launches.Select(l => l.Vc90Ms)), runs = launches },
+        launch = new { firstPaintMs = Median(launches.Select(l => l.FirstPaintMs)), vc90Ms = Median(launches.Select(l => l.Vc90Ms)), vc90ContentMs = Median(launches.Select(l => l.Vc90ContentMs)), runs = launches },
         sort = new { medianMs = Median(sorts), maxMs = sorts.Where(s => !double.IsNaN(s)).DefaultIfEmpty(double.NaN).Max(), missed = sorts.Count(double.IsNaN), runsMs = sorts },
         scroll = new { frames = intervals.Count + 1, p50Ms = Pct(intervals, 50), p99Ms = Pct(intervals, 99) },
         visible = new { cpuPctOneCore = cpuPct, privateMB = proc.PrivateMemorySize64 >> 20, workingSetMB = proc.WorkingSet64 >> 20 },
@@ -200,6 +203,7 @@ static class Native
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern nint FindWindow(string? cls, string? title);
     [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(nint ctx);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("winmm.dll")] public static extern uint timeBeginPeriod(uint ms);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(nint h);
     [DllImport("dwmapi.dll", EntryPoint = "DwmGetWindowAttribute")] static extern int DwmGetWindowAttributeInt(nint h, int attr, out int v, int size);
     // Visible and not cloaked (Suprvisor hides by cloaking).
@@ -251,4 +255,4 @@ static class Native
     public static void Wheel(int delta) => Send(new Input { type = 0, mi = new MouseInput { data = delta, flags = 0x800 } });
 }
 
-record LaunchRun(double FirstPaintMs, double Vc90Ms, int Frames, int MissedFrames, bool SameRect);
+record LaunchRun(double FirstPaintMs, double Vc90Ms, double Vc90ContentMs, int Frames, int MissedFrames, bool SameRect);

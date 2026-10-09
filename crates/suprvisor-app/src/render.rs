@@ -4,13 +4,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use suprvisor_core::System;
-use windows::Win32::Foundation::{HWND, RECT};
+use windows::Win32::Foundation::{HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
+use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice};
+use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::DirectWrite::*;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+use windows::Win32::Graphics::Dxgi::Common::*;
+use windows::Win32::Graphics::Dxgi::*;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
-use windows::core::{PCWSTR, Result, w};
+use windows::core::{Interface, PCWSTR, Result, w};
 
 use crate::shell::Icon;
 use crate::table::{COLS, Col, Key, Row, Table};
@@ -72,8 +76,86 @@ pub struct Renderer {
     layouts: HashMap<LayoutKey, IDWriteTextLayout>,
     prev: HashMap<LayoutKey, IDWriteTextLayout>,
     dim: u32, // color baked into cached layouts (the dimmed detail text)
-    target: Option<ID2D1HwndRenderTarget>, // created on first paint, dropped when the device is lost
-    bitmaps: HashMap<String, Option<ID2D1Bitmap>>, // per exe path; belong to the target
+    target: Option<Target>,                         // created on first paint, dropped when the device is lost
+    bitmaps: HashMap<String, Option<ID2D1Bitmap1>>, // per exe path; belong to the target
+}
+
+/// A flip-model swapchain shown through DirectComposition. DWM picks a flip-model frame up at
+/// the next vblank; the GDI-redirected HWND render target took one to two more (~16 ms at 100 Hz).
+/// Composition swapchains also carry per-pixel alpha, so Mica shows through.
+struct Target {
+    dc: ID2D1DeviceContext,
+    swapchain: IDXGISwapChain1,
+    dpi: u32,
+    _composition: (IDCompositionDevice, IDCompositionTarget, IDCompositionVisual),
+}
+
+fn pixel_format() -> D2D1_PIXEL_FORMAT {
+    D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED }
+}
+
+impl Target {
+    fn new(factory: &ID2D1Factory1, hwnd: HWND, dpi: u32) -> Result<Self> {
+        let mut rc = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut rc)? };
+        let mut device = None;
+        // WARP: software rendering on the CPU, so the GPU driver (40 MB private) never loads and
+        // drawing does not wait behind a render or sim that saturates the GPU.
+        unsafe { D3D11CreateDevice(None, D3D_DRIVER_TYPE_WARP, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, None)? };
+        let dxgi: IDXGIDevice1 = device.unwrap().cast()?;
+        unsafe { dxgi.SetMaximumFrameLatency(1)? };
+        let desc = DXGI_SWAP_CHAIN_DESC1 {
+            Width: (rc.right - rc.left).max(1) as u32,
+            Height: (rc.bottom - rc.top).max(1) as u32,
+            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
+            BufferCount: 2,
+            SwapEffect: DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL,
+            AlphaMode: DXGI_ALPHA_MODE_PREMULTIPLIED,
+            ..Default::default()
+        };
+        let dxgi_factory: IDXGIFactory2 = unsafe { CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))? };
+        let swapchain = unsafe { dxgi_factory.CreateSwapChainForComposition(&dxgi, &desc, None)? };
+        let composition: IDCompositionDevice = unsafe { DCompositionCreateDevice(&dxgi)? };
+        let target = unsafe { composition.CreateTargetForHwnd(hwnd, true)? };
+        let visual = unsafe { composition.CreateVisual()? };
+        unsafe {
+            visual.SetContent(&swapchain)?;
+            target.SetRoot(&visual)?;
+            composition.Commit()?;
+        }
+        let dc = unsafe { factory.CreateDevice(&dxgi)?.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)? };
+        let t = Self { dc, swapchain, dpi, _composition: (composition, target, visual) };
+        t.bind()?;
+        Ok(t)
+    }
+
+    /// Points the device context at the swapchain's back buffer.
+    fn bind(&self) -> Result<()> {
+        let surface: IDXGISurface = unsafe { self.swapchain.GetBuffer(0)? };
+        let props = D2D1_BITMAP_PROPERTIES1 {
+            pixelFormat: pixel_format(),
+            dpiX: self.dpi as f32,
+            dpiY: self.dpi as f32,
+            bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+            ..Default::default()
+        };
+        let bitmap = unsafe { self.dc.CreateBitmapFromDxgiSurface(&surface, Some(&props))? };
+        unsafe {
+            self.dc.SetTarget(&bitmap);
+            self.dc.SetDpi(self.dpi as f32, self.dpi as f32);
+        }
+        Ok(())
+    }
+
+    fn resize(&self, width: u32, height: u32) -> Result<()> {
+        unsafe {
+            self.dc.SetTarget(None);
+            self.swapchain.ResizeBuffers(0, width.max(1), height.max(1), DXGI_FORMAT_UNKNOWN, DXGI_SWAP_CHAIN_FLAG(0))?;
+        }
+        self.bind()
+    }
 }
 
 const NAME: usize = 0;
@@ -185,67 +267,46 @@ impl Renderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if let Some(t) = &self.target {
-            let _ = unsafe { t.Resize(&D2D_SIZE_U { width, height }) };
+        if let Some(t) = &self.target
+            && t.resize(width, height).is_err()
+        {
+            self.target = None;
         }
     }
 
     pub fn set_dpi(&mut self, dpi: u32) {
-        if let Some(t) = &self.target {
-            unsafe { t.SetDpi(dpi as f32, dpi as f32) };
+        if let Some(t) = &mut self.target {
+            t.dpi = dpi;
+            unsafe { t.dc.SetDpi(dpi as f32, dpi as f32) };
         }
     }
 
-    fn target(&mut self, hwnd: HWND, dpi: u32) -> Result<ID2D1HwndRenderTarget> {
-        if let Some(t) = &self.target {
-            return Ok(t.clone());
+    fn target(&mut self, hwnd: HWND, dpi: u32) -> Result<ID2D1DeviceContext> {
+        if self.target.is_none() {
+            self.target = Some(Target::new(&self.factory, hwnd, dpi)?);
+            self.bitmaps.clear();
         }
-        let mut rc = RECT::default();
-        unsafe { GetClientRect(hwnd, &mut rc)? };
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            // Software (WARP): 21 MB private vs 65 MB with the GPU driver loaded, same CPU,
-            // and drawing does not stall when a render or sim saturates the GPU.
-            r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-            // Premultiplied alpha: transparent pixels let the Mica backdrop show through.
-            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
-            dpiX: dpi as f32,
-            dpiY: dpi as f32,
-            ..Default::default()
-        };
-        let hwnd_props = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-            hwnd,
-            pixelSize: D2D_SIZE_U { width: (rc.right - rc.left) as u32, height: (rc.bottom - rc.top) as u32 },
-            // Do not block the UI thread on vblank; DWM composes the frame anyway.
-            presentOptions: D2D1_PRESENT_OPTIONS_IMMEDIATELY,
-        };
-        let t = unsafe { self.factory.CreateHwndRenderTarget(&props, &hwnd_props)? };
-        self.target = Some(t.clone());
-        self.bitmaps.clear();
-        Ok(t)
+        Ok(self.target.as_ref().unwrap().dc.clone())
     }
 
-    fn bitmap(&mut self, t: &ID2D1HwndRenderTarget, path: &str, icons: &HashMap<String, Arc<Icon>>) -> Option<ID2D1Bitmap> {
+    fn bitmap(&mut self, t: &ID2D1DeviceContext, path: &str, icons: &HashMap<String, Arc<Icon>>) -> Option<ID2D1Bitmap1> {
         if let Some(b) = self.bitmaps.get(path) {
             return b.clone();
         }
         let icon = icons.get(path)?; // not loaded yet: try again next paint
-        let props = D2D1_BITMAP_PROPERTIES {
-            pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
-            dpiX: 96.0,
-            dpiY: 96.0,
-        };
+        let props = D2D1_BITMAP_PROPERTIES1 { pixelFormat: pixel_format(), dpiX: 96.0, dpiY: 96.0, ..Default::default() };
         let size = D2D_SIZE_U { width: icon.size, height: icon.size };
         let b = unsafe { t.CreateBitmap(size, Some(icon.bgra.as_ptr().cast()), icon.size * 4, &props) }.ok();
         self.bitmaps.insert(path.to_owned(), b.clone());
         b
     }
 
-    fn text(&mut self, t: &ID2D1HwndRenderTarget, s: &str, f: usize, r: D2D_RECT_F, b: &ID2D1SolidColorBrush) {
+    fn text(&mut self, t: &ID2D1DeviceContext, s: &str, f: usize, r: D2D_RECT_F, b: &ID2D1SolidColorBrush) {
         self.text_dim(t, s, f, r, b, None);
     }
 
     /// Draws `s` in `r`; from UTF-16 index `dim.0` on, in the `dim.1` brush.
-    fn text_dim(&mut self, t: &ID2D1HwndRenderTarget, s: &str, f: usize, r: D2D_RECT_F, b: &ID2D1SolidColorBrush, dim: Option<(u32, &ID2D1SolidColorBrush)>) {
+    fn text_dim(&mut self, t: &ID2D1DeviceContext, s: &str, f: usize, r: D2D_RECT_F, b: &ID2D1SolidColorBrush, dim: Option<(u32, &ID2D1SolidColorBrush)>) {
         let (w, h) = ((r.right - r.left).max(0.0), (r.bottom - r.top).max(0.0));
         let key = (f, (w * 4.0) as u32, (h * 4.0) as u32, dim.map_or(u32::MAX, |d| d.0), s.to_owned());
         let layout = match self.prev.remove(&key).or_else(|| self.layouts.get(&key).cloned()) {
@@ -361,7 +422,7 @@ impl Renderer {
                 }
                 let path = row.rep.map(|p| tb.procs[p].path.as_str()).unwrap_or("");
                 match (!path.is_empty()).then(|| self.bitmap(&t, path, f.icons)).flatten() {
-                    Some(b) => t.DrawBitmap(&b, Some(&rect(x, y + 6.0, x + 16.0, y + 22.0)), 1.0, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, None),
+                    Some(b) => t.DrawBitmap(&b, Some(&rect(x, y + 6.0, x + 16.0, y + 22.0)), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None),
                     None => t.DrawRoundedRectangle(
                         &D2D1_ROUNDED_RECT { rect: rect(x + 2.5, y + 8.5, x + 13.5, y + 19.5), radiusX: 2.0, radiusY: 2.0 },
                         &line,
@@ -398,7 +459,8 @@ impl Renderer {
             t.PopAxisAlignedClip();
 
             self.prev = std::mem::take(&mut self.layouts);
-            if t.EndDraw(None, None).is_err() {
+            let presented = t.EndDraw(None, None).and_then(|_| self.target.as_ref().unwrap().swapchain.Present(1, DXGI_PRESENT(0)).ok());
+            if presented.is_err() {
                 self.target = None; // device lost: recreate on the next paint
             }
         }

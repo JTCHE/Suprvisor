@@ -1,0 +1,22 @@
+== suprvisor, load False, 3 launches
+window rect 33,26 1186x793
+launch 0: first paint 69 ms, VC90 314 ms
+  frames: 54ms:0.01/1.00 69ms:1.00/1.00 75ms:0.00/1.00 85ms:0.49/1.00 94ms:0.70/1.00 108ms:0.13/1.00 116ms:0.08/1.00 125ms:0.59/1.00
+launch 1: first paint 51 ms, VC90 295 ms
+  frames: 35ms:0.01/1.00 51ms:1.00/1.00 66ms:0.49/1.00 81ms:0.70/1.00 90ms:0.13/1.00 95ms:0.08/1.00 105ms:0.59/1.00 116ms:0.65/1.00
+launch 2: first paint 80 ms, VC90 339 ms
+  frames: 70ms:0.01/0.01 80ms:1.00/1.00 95ms:0.00/1.00 107ms:0.00/1.00 111ms:0.49/1.00 119ms:0.70/1.00 130ms:0.14/1.00 142ms:0.07/1.00
+  after click: 8ms:0.000 23ms:0.058 28ms:0.000 38ms:0.000
+  after click: 1ms:0.000 10ms:0.000 23ms:0.058 30ms:0.000
+  after click: 4ms:0.000 14ms:0.000 27ms:0.058 33ms:0.000
+  after click: 8ms:0.000 22ms:0.058 38ms:0.000 48ms:0.000
+  after click: 7ms:0.000 22ms:0.058 26ms:0.000 36ms:0.000
+  after click: 11ms:0.000 24ms:0.058 31ms:0.000 40ms:0.000
+  after click: 6ms:0.000 16ms:0.000 26ms:0.000 36ms:0.000
+  after click: 7ms:0.000 17ms:0.000 26ms:0.000 36ms:0.000
+  after click: 4ms:0.000 17ms:0.058 24ms:0.000 34ms:0.000
+  after click: 2ms:0.000 18ms:0.058 23ms:0.000 33ms:0.000
+sort ms: 23, 23, 27, 22, 22, 24, 681, 480, 17, 18
+scroll: 201 frames in 2 s, interval p50 19.1 ms, p99 21.5 ms
+visible: 4.7 % of one core, private 45 MB, working set 64 MB
+wrote C:\Users\john\Desktop\experiments\Suprvisor\results\20261009-184235-suprvisor-idle.json

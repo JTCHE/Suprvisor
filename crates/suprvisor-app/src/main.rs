@@ -141,7 +141,7 @@ fn main() -> Result<()> {
     });
     let hwnd = unsafe {
         CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
+            WS_EX_NOREDIRECTIONBITMAP, // all content comes through DirectComposition (render.rs)
             CLASS,
             w!("Suprvisor"),
             WS_OVERLAPPEDWINDOW,

@@ -1,0 +1,237 @@
+{
+  "target": "suprvisor",
+  "launchMode": "exe (IFEO stub path)",
+  "load": false,
+  "date": "2026-10-09T18:42:35.2445107+02:00",
+  "launch": {
+    "firstPaintMs": 69.1187,
+    "vc90Ms": 313.7905,
+    "runs": [
+      {
+        "FirstPaintMs": 69.1187,
+        "Vc90Ms": 313.7905,
+        "Frames": 500,
+        "MissedFrames": 5,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 51.3554,
+        "Vc90Ms": 294.6454,
+        "Frames": 499,
+        "MissedFrames": 4,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 80.286,
+        "Vc90Ms": 339.238,
+        "Frames": 500,
+        "MissedFrames": 6,
+        "SameRect": true
+      }
+    ]
+  },
+  "sort": {
+    "medianMs": 22.535,
+    "maxMs": 681.1662,
+    "missed": 0,
+    "runsMs": [
+      22.535,
+      22.5509,
+      27.2706,
+      22.0172,
+      22.4165,
+      23.8831,
+      681.1662,
+      479.568,
+      17.1168,
+      18.08
+    ]
+  },
+  "scroll": {
+    "frames": 201,
+    "p50Ms": 19.1155,
+    "p99Ms": 21.5006
+  },
+  "visible": {
+    "cpuPctOneCore": 4.6875,
+    "privateMB": 45,
+    "workingSetMB": 64
+  },
+  "sampleLaunchFrames": [
+    {
+      "ms": 52,
+      "changed": 0.009,
+      "fromStart": 1
+    },
+    {
+      "ms": 67.2,
+      "changed": 1,
+      "fromStart": 1
+    },
+    {
+      "ms": 72.7,
+      "changed": 0,
+      "fromStart": 1
+    },
+    {
+      "ms": 83.1,
+      "changed": 0.49,
+      "fromStart": 1
+    },
+    {
+      "ms": 92.1,
+      "changed": 0.701,
+      "fromStart": 1
+    },
+    {
+      "ms": 106.5,
+      "changed": 0.131,
+      "fromStart": 1
+    },
+    {
+      "ms": 114.3,
+      "changed": 0.077,
+      "fromStart": 1
+    },
+    {
+      "ms": 123.2,
+      "changed": 0.586,
+      "fromStart": 1
+    },
+    {
+      "ms": 132,
+      "changed": 0.655,
+      "fromStart": 1
+    },
+    {
+      "ms": 141.7,
+      "changed": 0.412,
+      "fromStart": 1
+    },
+    {
+      "ms": 151.9,
+      "changed": 0.121,
+      "fromStart": 1
+    },
+    {
+      "ms": 163.2,
+      "changed": 0.615,
+      "fromStart": 1
+    },
+    {
+      "ms": 172.2,
+      "changed": 0.307,
+      "fromStart": 1
+    },
+    {
+      "ms": 182.1,
+      "changed": 0.308,
+      "fromStart": 1
+    },
+    {
+      "ms": 192.1,
+      "changed": 0.267,
+      "fromStart": 1
+    },
+    {
+      "ms": 202.2,
+      "changed": 0.62,
+      "fromStart": 1
+    },
+    {
+      "ms": 213.6,
+      "changed": 0.267,
+      "fromStart": 1
+    },
+    {
+      "ms": 222.2,
+      "changed": 0.212,
+      "fromStart": 1
+    },
+    {
+      "ms": 232,
+      "changed": 0.37,
+      "fromStart": 1
+    },
+    {
+      "ms": 242.7,
+      "changed": 0.635,
+      "fromStart": 1
+    },
+    {
+      "ms": 253.2,
+      "changed": 0.286,
+      "fromStart": 1
+    },
+    {
+      "ms": 262.2,
+      "changed": 0.201,
+      "fromStart": 1
+    },
+    {
+      "ms": 272.1,
+      "changed": 0.201,
+      "fromStart": 1
+    },
+    {
+      "ms": 282.9,
+      "changed": 0.627,
+      "fromStart": 1
+    },
+    {
+      "ms": 292.6,
+      "changed": 0.22,
+      "fromStart": 1
+    },
+    {
+      "ms": 311.9,
+      "changed": 0.341,
+      "fromStart": 1
+    },
+    {
+      "ms": 624.6,
+      "changed": 0.002,
+      "fromStart": 1
+    },
+    {
+      "ms": 1124.3,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 1634,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 2154.7,
+      "changed": 0.002,
+      "fromStart": 1
+    },
+    {
+      "ms": 2663.2,
+      "changed": 0.002,
+      "fromStart": 1
+    },
+    {
+      "ms": 3224.3,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 3742.9,
+      "changed": 0.002,
+      "fromStart": 1
+    },
+    {
+      "ms": 4263.1,
+      "changed": 0.003,
+      "fromStart": 1
+    },
+    {
+      "ms": 4772.4,
+      "changed": 0.003,
+      "fromStart": 1
+    }
+  ]
+}
