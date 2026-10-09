@@ -21,6 +21,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "suprvisor-app"
+version = "0.1.0"
+dependencies = [
+ "suprvisor-core",
+ "windows",
+]
+
+[[package]]
 name = "suprvisor-core"
 version = "0.1.0"
 dependencies = [
