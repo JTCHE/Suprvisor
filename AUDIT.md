@@ -86,7 +86,7 @@ move by +-1% of a core and by tens of ms between runs. A clean idle run and the 
 | Sort | < 10 ms | 10-38 ms, median ~20 | ~3 ms input, ~5 ms rebuild + paint, then the next vblank; outliers to 1.2 s under the cook |
 | Scroll p50 / p99 | p99 < 10 ms | 10.1 / 20.8 ms | one frame per notch at 100 Hz; p99 = one missed vblank |
 | Hidden | < 0.1% | 0.091% (60 s, by CPU cycles) | v1.1: one totals sample per second (~0.45 ms) plus a full GPU engine read every 60 s (~11 ms) |
-| Visible, Processes | < 1% | 2.7-3.4% | the collector alone is ~2-3% (see above) |
+| Visible, Processes | < 1% | 2.8-3.0% | collector 1.7% (scan 20 ms every 3 s, GPU engine read 11 ms every 3 s), UI thread 0.9% (table rebuild + paint every 500 ms) |
 | Visible, Performance | < 1% | 0.94% | v1.1: one sample and one repaint per second |
 | Private memory | < 50 MB | 23-25 MB | single-threaded WARP (was 35-46 MB) |
 
@@ -101,6 +101,9 @@ What changed the numbers:
   latency.
 - PDH for disk and network cost ~4 ms per read; `IOCTL_DISK_PERFORMANCE` and `GetIfEntry2` on the
   physical adapters cost ~0.35 ms.
+- Two processes on this machine leak threads (18,000 each). A CPU time or I/O read walks the
+  threads, so each read of them cost 3-8 ms, more than the other 28 visible rows together. They are
+  now read at most every 3 s: refresh of 30 rows 9.4 ms to 1.2 ms.
 - Bug found by the hidden measurement: at `--resident` start, the creation `WM_SIZE` told the
   collector the window was visible, so a hidden instance listed processes every 500 ms until the
   first show/hide.

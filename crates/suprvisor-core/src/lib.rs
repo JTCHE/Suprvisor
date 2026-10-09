@@ -15,7 +15,7 @@ mod procs;
 mod system;
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HANDLE;
 
@@ -73,7 +73,8 @@ struct Tracked {
     read: u64,
     write: u64,
     gpu_nodes: gpu::NodeTimes,
-    seen: u64, // last scan generation that saw it
+    seen: u64,  // last scan generation that saw it
+    slow: bool, // its last CPU time read took >= SLOW_READ
 }
 
 impl Drop for Tracked {
@@ -91,6 +92,13 @@ fn cpu_share(cpus: u32, busy_100ns: i64, secs: f64) -> f32 {
 /// Shortest interval for a new rate. CPU times advance in clock ticks (15.6 ms), so a rate over
 /// a few ms is noise: a row refreshed just before a scan keeps its rate until this much time passed.
 const MIN_RATE_SECS: f64 = 0.25;
+
+/// Reading a process's CPU time or I/O makes the kernel walk its threads (~0.2 us each). A process
+/// that leaks threads (two here have 18,000 each) costs 3-8 ms per read, more than all other rows
+/// together. `refresh` reads such a process at most every SLOW_EVERY; its rates stay correct, they
+/// update less often.
+const SLOW_READ: Duration = Duration::from_millis(1);
+const SLOW_EVERY: Duration = Duration::from_secs(3);
 
 impl Tracked {
     /// New CPU time read at `now`: updates CPU, RAM, GPU and VRAM.
@@ -179,6 +187,7 @@ impl Collector {
         let generation = self.generation;
         let now = Instant::now();
         for h in handles::walk() {
+            let read = Instant::now();
             let Some((create, cpu_time)) = handles::times(h) else {
                 handles::close(h);
                 continue;
@@ -191,6 +200,7 @@ impl Collector {
                     handles::close(h);
                 }
                 t.seen = generation;
+                t.slow = read.elapsed() >= SLOW_READ;
                 t.update(&self.gpu, self.cpus, cpu_time, now);
                 continue;
             }
@@ -246,10 +256,16 @@ impl Collector {
             if t.handle.is_invalid() {
                 continue;
             }
-            if let Some((_, cpu_time)) = handles::times(t.handle) {
-                t.update(&self.gpu, self.cpus, cpu_time, now);
+            if !t.slow || now - t.at >= SLOW_EVERY {
+                let read = Instant::now();
+                if let Some((_, cpu_time)) = handles::times(t.handle) {
+                    t.update(&self.gpu, self.cpus, cpu_time, now);
+                }
+                t.slow = read.elapsed() >= SLOW_READ;
             }
-            if io && let Some((r, w)) = handles::io(t.handle) {
+            if io && (!t.slow || t.io_at.is_none_or(|at| now - at >= SLOW_EVERY))
+                && let Some((r, w)) = handles::io(t.handle)
+            {
                 t.update_io(r, w, now);
             }
             (p.cpu, p.private_ws, p.gpu, p.vram) = (t.p.cpu, t.p.private_ws, t.p.gpu, t.p.vram);
@@ -270,6 +286,7 @@ impl Collector {
             write: 0,
             gpu_nodes: gpu::NodeTimes::default(),
             seen: 0,
+            slow: false,
         };
         if h.is_invalid() {
             return t;
