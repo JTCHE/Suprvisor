@@ -1,0 +1,267 @@
+{
+  "target": "suprvisor",
+  "launchMode": "hotkey",
+  "load": false,
+  "date": "2026-10-09T18:53:17.8873502+02:00",
+  "launch": {
+    "firstPaintMs": 38.2269,
+    "vc90Ms": 295.7347,
+    "vc90ContentMs": 36.303,
+    "runs": [
+      {
+        "FirstPaintMs": 66.2955,
+        "Vc90Ms": 345.3492,
+        "Vc90ContentMs": 54.7918,
+        "Frames": 511,
+        "MissedFrames": 1,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 51.4427,
+        "Vc90Ms": 295.7347,
+        "Vc90ContentMs": 36.303,
+        "Frames": 506,
+        "MissedFrames": 5,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 29.6424,
+        "Vc90Ms": 289.2726,
+        "Vc90ContentMs": 29.6424,
+        "Frames": 501,
+        "MissedFrames": 6,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 35.1723,
+        "Vc90Ms": 294.1476,
+        "Vc90ContentMs": 35.1723,
+        "Frames": 507,
+        "MissedFrames": 2,
+        "SameRect": true
+      },
+      {
+        "FirstPaintMs": 38.2269,
+        "Vc90Ms": 296.7771,
+        "Vc90ContentMs": 38.2269,
+        "Frames": 316,
+        "MissedFrames": 10,
+        "SameRect": true
+      }
+    ]
+  },
+  "sort": {
+    "medianMs": 20.9211,
+    "maxMs": 37.5753,
+    "missed": 0,
+    "runsMs": [
+      24.8187,
+      26.4398,
+      20.2561,
+      19.2281,
+      18.0522,
+      27.8275,
+      31.2961,
+      20.9211,
+      18.0963,
+      37.5753
+    ]
+  },
+  "scroll": {
+    "frames": 122,
+    "p50Ms": 19.5535,
+    "p99Ms": 60.6417
+  },
+  "visible": {
+    "cpuPctOneCore": 5.78125,
+    "privateMB": 46,
+    "workingSetMB": 60
+  },
+  "sampleLaunchFrames": [
+    {
+      "ms": 51.3,
+      "changed": 0.009,
+      "fromStart": 1
+    },
+    {
+      "ms": 62.8,
+      "changed": 0.996,
+      "fromStart": 1
+    },
+    {
+      "ms": 96.9,
+      "changed": 0.004,
+      "fromStart": 1
+    },
+    {
+      "ms": 102.6,
+      "changed": 0,
+      "fromStart": 1
+    },
+    {
+      "ms": 112.2,
+      "changed": 0.49,
+      "fromStart": 1
+    },
+    {
+      "ms": 121.9,
+      "changed": 0.701,
+      "fromStart": 1
+    },
+    {
+      "ms": 136.3,
+      "changed": 0.136,
+      "fromStart": 1
+    },
+    {
+      "ms": 142.2,
+      "changed": 0.076,
+      "fromStart": 1
+    },
+    {
+      "ms": 151.9,
+      "changed": 0.586,
+      "fromStart": 1
+    },
+    {
+      "ms": 162.3,
+      "changed": 0.655,
+      "fromStart": 1
+    },
+    {
+      "ms": 171.9,
+      "changed": 0.412,
+      "fromStart": 1
+    },
+    {
+      "ms": 182.1,
+      "changed": 0.121,
+      "fromStart": 1
+    },
+    {
+      "ms": 194.5,
+      "changed": 0.615,
+      "fromStart": 1
+    },
+    {
+      "ms": 203.1,
+      "changed": 0.307,
+      "fromStart": 1
+    },
+    {
+      "ms": 212.7,
+      "changed": 0.308,
+      "fromStart": 1
+    },
+    {
+      "ms": 222.4,
+      "changed": 0.267,
+      "fromStart": 1
+    },
+    {
+      "ms": 233.4,
+      "changed": 0.619,
+      "fromStart": 1
+    },
+    {
+      "ms": 242.1,
+      "changed": 0.266,
+      "fromStart": 1
+    },
+    {
+      "ms": 251.9,
+      "changed": 0.212,
+      "fromStart": 1
+    },
+    {
+      "ms": 261.5,
+      "changed": 0.37,
+      "fromStart": 1
+    },
+    {
+      "ms": 272.3,
+      "changed": 0.635,
+      "fromStart": 1
+    },
+    {
+      "ms": 282.1,
+      "changed": 0.286,
+      "fromStart": 1
+    },
+    {
+      "ms": 292.1,
+      "changed": 0.201,
+      "fromStart": 1
+    },
+    {
+      "ms": 302.8,
+      "changed": 0.201,
+      "fromStart": 1
+    },
+    {
+      "ms": 311.7,
+      "changed": 0.627,
+      "fromStart": 1
+    },
+    {
+      "ms": 321.5,
+      "changed": 0.22,
+      "fromStart": 1
+    },
+    {
+      "ms": 332.6,
+      "changed": 0.191,
+      "fromStart": 1
+    },
+    {
+      "ms": 341.9,
+      "changed": 0.183,
+      "fromStart": 1
+    },
+    {
+      "ms": 644.5,
+      "changed": 0.002,
+      "fromStart": 1
+    },
+    {
+      "ms": 1155.1,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 1663.3,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 2175.1,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 2674.1,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 3213.5,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 3724.7,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 4233.7,
+      "changed": 0.001,
+      "fromStart": 1
+    },
+    {
+      "ms": 4733.9,
+      "changed": 0.002,
+      "fromStart": 1
+    }
+  ]
+}

@@ -4,7 +4,9 @@
 // cursor moves and kills from a lower integrity level. Use audit/run.ps1 (one UAC prompt).
 // Suprvisor: the resident process is shown by running suprvisor.exe (the IFEO stub path) and
 // hidden with --hide, so "launch" is show-from-tray. Runs at the target's integrity level.
-//   Audit.dll [--target taskmgr|suprvisor] [--exe path] [--only idle|load] [--runs N] [--sort-at x,y]
+// Launch: Ctrl+Shift+Esc for both (Suprvisor catches it with a keyboard hook); --launch exe
+// starts suprvisor.exe instead, the path the IFEO redirect takes.
+//   Audit.dll [--target taskmgr|suprvisor] [--launch hotkey|exe] [--exe path] [--only idle|load] [--runs N] [--sort-at x,y]
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
@@ -17,6 +19,7 @@ var target = Arg("--target") ?? "taskmgr";
 bool tm = target == "taskmgr";
 if (!tm && target != "suprvisor") { Console.Error.WriteLine($"unknown target {target}"); return 2; }
 var (windowClass, processName) = tm ? ("TaskManagerWindow", "Taskmgr") : ("Suprvisor", "suprvisor");
+bool viaExe = Arg("--launch") == "exe";
 var exe = Path.GetFullPath(Arg("--exe") ?? Path.Combine(AppContext.BaseDirectory, "../../../../target/release/suprvisor.exe"));
 // Taskmgr is still loading rows and icons after 18 s. Suprvisor shows its last snapshot, then
 // gets a new list ~50 ms later.
@@ -25,6 +28,11 @@ int SettleMs = tm ? 25_000 : 5_000;
 if (tm && !new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator))
 {
     Console.Error.WriteLine("Run elevated (audit/run.ps1). Taskmgr self-elevates; UIPI blocks a non-elevated harness.");
+    return 2;
+}
+if (tm && FindWindow("Suprvisor", null) != 0)
+{
+    Console.Error.WriteLine("Suprvisor is running and takes Ctrl+Shift+Esc. Exit it first: suprvisor.exe --exit");
     return 2;
 }
 SetProcessDpiAwarenessContext(-4); // per-monitor v2: all rects in physical pixels
@@ -114,7 +122,6 @@ object Suite(bool withLoad)
             for (var w = Stopwatch.StartNew(); hit == null && w.ElapsedMilliseconds < 5000; Thread.Sleep(20))
                 hit = cap.Snapshot().FirstOrDefault(f => f.Time >= t0 && f.Changed > 0.02);
             sorts.Add(hit == null ? double.NaN : Capture.Ms(hit.Time - t0));
-            if (Environment.GetEnvironmentVariable("AUDIT_QPC") != null) Console.WriteLine($"  qpc up {t0} frame {hit?.Time}");
             Console.WriteLine("  after click: " + string.Join(" ", cap.Snapshot().Where(f => f.Time >= t0).Take(4).Select(f => $"{Capture.Ms(f.Time - t0):F0}ms:{f.Changed:F3}")));
             Thread.Sleep(1500);
         }
@@ -148,7 +155,7 @@ object Suite(bool withLoad)
 
     return new
     {
-        target, launchMode = tm ? "hotkey" : "exe (IFEO stub path)", load = withLoad, date = DateTime.Now,
+        target, launchMode = viaExe ? "exe (IFEO path)" : "hotkey", load = withLoad, date = DateTime.Now,
         launch = new { firstPaintMs = Median(launches.Select(l => l.FirstPaintMs)), vc90Ms = Median(launches.Select(l => l.Vc90Ms)), vc90ContentMs = Median(launches.Select(l => l.Vc90ContentMs)), runs = launches },
         sort = new { medianMs = Median(sorts), maxMs = sorts.Where(s => !double.IsNaN(s)).DefaultIfEmpty(double.NaN).Max(), missed = sorts.Count(double.IsNaN), runsMs = sorts },
         scroll = new { frames = intervals.Count + 1, p50Ms = Pct(intervals, 50), p99Ms = Pct(intervals, 99) },
@@ -167,8 +174,8 @@ void Kill()
 // Ctrl+Shift+Esc, the real path. Suprvisor: what the IFEO stub will do (start the exe, which signals).
 void Launch()
 {
-    if (tm) Keys(0x11, 0x10, 0x1B);
-    else Process.Start(exe);
+    if (viaExe) Process.Start(exe);
+    else Keys(0x11, 0x10, 0x1B);
 }
 
 bool Visible() => FindWindow(windowClass, null) is var h && h != 0 && Shown(h);

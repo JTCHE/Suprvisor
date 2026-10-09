@@ -5,6 +5,7 @@
 //!   suprvisor.exe --exit   quit the resident process
 #![windows_subsystem = "windows"]
 
+mod hotkey;
 mod render;
 mod settings;
 mod shell;
@@ -38,6 +39,7 @@ const WM_APP_HIDE: u32 = WM_APP + 2;
 const WM_APP_EXIT: u32 = WM_APP + 3;
 const WM_APP_DATA: u32 = WM_APP + 4; // the collector thread has a new snapshot
 const WM_APP_TRAY: u32 = WM_APP + 5;
+const WM_APP_HOTKEY: u32 = WM_APP + 6; // Ctrl+Shift+Esc, from the keyboard hook
 const MENU_SHOW: usize = 1;
 const MENU_EXIT: usize = 2;
 const MENU_END: usize = 10;
@@ -168,6 +170,7 @@ fn main() -> Result<()> {
     style_window(hwnd, theme::Theme::current().dark);
     add_tray_icon(hwnd);
     spawn_collector(hwnd, data, wanted, signal_rx);
+    hotkey::install(hwnd, WM_APP_HOTKEY);
     if window.is_some_and(|(_, max)| max) {
         let _ = unsafe { ShowWindow(hwnd, SW_SHOWMAXIMIZED) };
     }
@@ -410,7 +413,15 @@ impl App {
     fn show(&mut self) {
         unsafe {
             let _ = ShowWindow(self.hwnd, SW_SHOW);
-            let _ = SetForegroundWindow(self.hwnd);
+            if !SetForegroundWindow(self.hwnd).as_bool() || GetForegroundWindow() != self.hwnd {
+                // Foreground lock: after the hook swallowed the key, this process did not get the
+                // last input. Joining the foreground thread's input queue lifts the lock.
+                let fg = GetWindowThreadProcessId(GetForegroundWindow(), None);
+                let me = GetCurrentThreadId();
+                let _ = AttachThreadInput(me, fg, true);
+                let _ = SetForegroundWindow(self.hwnd);
+                let _ = AttachThreadInput(me, fg, false);
+            }
         }
         if !self.shown {
             self.shown = true;
@@ -724,7 +735,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             LRESULT(0)
         }
-        WM_APP_SHOW => {
+        WM_APP_SHOW | WM_APP_HOTKEY => {
             a.show();
             LRESULT(0)
         }
