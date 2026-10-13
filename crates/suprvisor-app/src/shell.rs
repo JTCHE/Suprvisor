@@ -58,7 +58,7 @@ pub fn icon(path: &str) -> Option<Icon> {
     pixels
 }
 
-fn pixels(h: HICON) -> Option<Icon> {
+pub fn pixels(h: HICON) -> Option<Icon> {
     let mut info = ICONINFO::default();
     unsafe { GetIconInfo(h, &mut info) }.ok()?;
     let mut bm = BITMAP::default();
@@ -122,4 +122,52 @@ pub fn copy(hwnd: HWND, text: &str) {
 /// Opens Explorer on the exe's folder with the file selected.
 pub fn open_location(path: &str) {
     let _ = std::process::Command::new("explorer.exe").raw_arg(format!("/select,\"{path}\"")).spawn();
+}
+
+/// The clipboard's text, if it holds any.
+pub fn paste(hwnd: HWND) -> Option<String> {
+    use windows::Win32::System::DataExchange::GetClipboardData;
+    unsafe {
+        OpenClipboard(Some(hwnd)).ok()?;
+        let text = GetClipboardData(CF_UNICODETEXT.0 as u32).ok().and_then(|h| {
+            let mem = windows::Win32::Foundation::HGLOBAL(h.0);
+            let p = GlobalLock(mem) as *const u16;
+            if p.is_null() {
+                return None;
+            }
+            let n = (0..).take_while(|&i| *p.add(i) != 0).count();
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+            let _ = GlobalUnlock(mem);
+            Some(s)
+        });
+        let _ = CloseClipboard();
+        text
+    }
+}
+
+/// The shell's Run dialog, titled like Task Manager's "Run new task" (shell32 ordinal 61, which
+/// Task Manager itself uses). A program started from it runs with this process's rights: elevated
+/// when Suprvisor is, and the dialog says so.
+pub fn run_dialog(hwnd: HWND) {
+    use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+    use windows::core::{PCSTR, PCWSTR, w};
+    type RunFileDlg = unsafe extern "system" fn(HWND, HICON, PCWSTR, PCWSTR, PCWSTR, u32);
+    unsafe {
+        let Ok(lib) = LoadLibraryW(w!("shell32.dll")) else { return };
+        let Some(f) = GetProcAddress(lib, PCSTR(61 as *const u8)) else { return };
+        let f: RunFileDlg = std::mem::transmute(f);
+        let text = w!("Type the name of a program, folder, document, or Internet resource, and Windows will open it for you.");
+        f(hwnd, HICON::default(), PCWSTR::null(), w!("Create new task"), text, 0);
+    }
+}
+
+/// This exe's icon (resource 1) at `size` pixels.
+pub fn app_icon(size: i32) -> Option<Icon> {
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    let module = unsafe { GetModuleHandleW(None) }.ok()?;
+    let h = unsafe { LoadImageW(Some(module.into()), windows::core::PCWSTR(1 as _), IMAGE_ICON, size, size, LR_DEFAULTCOLOR) }.ok()?;
+    let h = HICON(h.0);
+    let px = pixels(h);
+    let _ = unsafe { DestroyIcon(h) };
+    px
 }

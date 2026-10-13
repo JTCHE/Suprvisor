@@ -36,8 +36,28 @@ pub enum Col {
 }
 
 pub const COLS: [Col; 7] = [Col::Name, Col::Cpu, Col::Ram, Col::Gpu, Col::Vram, Col::Disk, Col::Pid];
+/// The columns after Name, in their default order. Widths, order and visibility are kept per column
+/// in this order (`Col::num`).
+pub const NUMS: [Col; 6] = [Col::Cpu, Col::Ram, Col::Gpu, Col::Vram, Col::Disk, Col::Pid];
 
 impl Col {
+    /// Index in `NUMS`; None for Name.
+    pub fn num(self) -> Option<usize> {
+        NUMS.iter().position(|&c| c == self)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Col::Name => "Name",
+            Col::Pid => "PID",
+            Col::Cpu => "CPU",
+            Col::Ram => "Memory",
+            Col::Gpu => "GPU",
+            Col::Vram => "VRAM",
+            Col::Disk => "Disk r / w",
+        }
+    }
+
     pub fn id(self) -> &'static str {
         match self {
             Col::Name => "name",
@@ -126,9 +146,14 @@ pub struct Table {
     pub filter: String,
     /// Rows whose expanded state differs from the default (sections open, the rest closed).
     pub toggled: HashSet<Key>,
+    /// The cursor row: arrow keys move from it, Shift extends from `anchor` to it.
     pub selected: Option<Key>,
+    pub anchor: Option<Key>,
+    /// Every selected row. End task acts on all of them.
+    pub marked: HashSet<Key>,
     pub hover: Option<usize>,
-    pub scroll: usize,
+    /// First row on screen, in rows; fractional while a smooth scroll moves.
+    pub scroll: f32,
     windir: String,
 }
 
@@ -149,8 +174,10 @@ impl Table {
             filter: String::new(),
             toggled: HashSet::new(),
             selected: None,
+            anchor: None,
+            marked: HashSet::new(),
             hover: None,
-            scroll: 0,
+            scroll: 0.0,
             windir,
         }
     }
@@ -178,6 +205,23 @@ impl Table {
     pub fn selected_index(&self) -> Option<usize> {
         let k = self.selected.as_ref()?;
         self.rows.iter().position(|r| &r.key == k)
+    }
+
+    pub fn index_of(&self, k: &Option<Key>) -> Option<usize> {
+        let k = k.as_ref()?;
+        self.rows.iter().position(|r| &r.key == k)
+    }
+
+    /// Rows `a..=b` (either order) become the selection, on top of `base`.
+    pub fn mark_range(&mut self, a: usize, b: usize, base: &HashSet<Key>) {
+        let (a, b) = (a.min(b), a.max(b).min(self.rows.len().saturating_sub(1)));
+        self.marked = base.clone();
+        self.marked.extend(self.rows.get(a..=b).into_iter().flatten().map(|r| r.key.clone()));
+    }
+
+    /// Selected rows, top to bottom.
+    pub fn marked_rows(&self) -> Vec<usize> {
+        (0..self.rows.len()).filter(|&i| self.marked.contains(&self.rows[i].key)).collect()
     }
 
     fn section(&self, members: &[usize]) -> Section {
@@ -324,7 +368,11 @@ impl Table {
         let mut rows = Vec::with_capacity(self.rows.len());
         self.flatten(nodes, 0, &open, &mut rows);
         self.rows = rows;
-        self.scroll = self.scroll.min(self.rows.len().saturating_sub(1));
+        // A selected row that is gone (ended, filtered out, folded away) leaves the selection, so
+        // End task never acts on a row that is not on screen.
+        let keys: HashSet<&Key> = self.rows.iter().map(|r| &r.key).collect();
+        self.marked.retain(|k| keys.contains(k));
+        self.scroll = self.scroll.min(self.rows.len().saturating_sub(1) as f32);
     }
 
     fn flatten(&self, nodes: Vec<Node>, depth: u8, open: &HashSet<Key>, out: &mut Vec<Row>) {
@@ -421,5 +469,14 @@ mod tests {
         t.grouped = true;
         t.rebuild();
         assert_eq!(t.keys(0..1).len(), 0, "a section row needs no refresh");
+
+        let none = HashSet::new();
+        t.mark_range(3, 1, &none);
+        assert_eq!(t.marked_rows(), [1, 2, 3], "a drag up selects the same rows as a drag down");
+        t.toggle(1); // fold Code: its members leave the selection with their rows
+        assert!(t.marked_rows().iter().all(|&i| i < t.rows.len()));
+        t.filter = "sync".into();
+        t.rebuild();
+        assert!(t.marked.is_empty(), "filtered-out rows are not selected");
     }
 }

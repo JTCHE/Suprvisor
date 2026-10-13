@@ -8,7 +8,7 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE, HMODULE, HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_WARP;
-use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_PREVENT_INTERNAL_THREADING_OPTIMIZATIONS, D3D11_SDK_VERSION, D3D11CreateDevice};
+use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::DirectComposition::*;
 use windows::Win32::Graphics::DirectWrite::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -17,8 +17,9 @@ use windows::Win32::System::Threading::WaitForSingleObject;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::core::{Interface, PCWSTR, Result, w};
 
+use crate::edit::Edit;
 use crate::shell::Icon;
-use crate::table::{COLS, Col, Key, Row, Table};
+use crate::table::{Col, Key, Row, Table};
 use crate::theme::Theme;
 
 // The window, like Task Manager: a title bar with the search box and a navigation pane on Mica,
@@ -50,35 +51,39 @@ pub fn nav_width(open: bool) -> f32 {
     if open { 200.0 } else { 48.0 }
 }
 
-/// Left and right edges of each column, in `COLS` order. Numeric columns are anchored right;
-/// Name takes the rest, from the content layer's left edge `x0`.
-pub fn columns(x0: f32, width: f32, widths: &[f32; 6]) -> [(f32, f32); 7] {
-    let mut out = [(0.0, 0.0); 7];
+/// Left and right edges of the shown columns, Name first, then the others in `order`. Numeric
+/// columns are anchored right; Name takes the rest, from the content layer's left edge `x0`.
+pub fn columns(x0: f32, width: f32, widths: &[f32; 6], order: &[Col; 6], hidden: &[bool; 6]) -> Vec<(Col, f32, f32)> {
+    let shown: Vec<Col> = order.iter().copied().filter(|c| !c.num().is_some_and(|i| hidden[i])).collect();
+    let mut out = vec![(Col::Name, 0.0, 0.0); shown.len() + 1];
     let mut x = width - PAD - BAR;
-    for i in (0..6).rev() {
-        out[i + 1] = (x - widths[i], x);
-        x -= widths[i];
+    for (k, c) in shown.iter().enumerate().rev() {
+        let w = widths[c.num().unwrap()];
+        out[k + 1] = (*c, x - w, x);
+        x -= w;
     }
-    out[0] = (x0 + PAD, x);
+    out[0] = (Col::Name, x0 + PAD, x.max(x0 + PAD));
     out
 }
 
-/// Widths after dragging the separator at the left edge of numeric column `i` by `d` DIPs, from
-/// `start`. Only that separator moves: the columns on its two sides trade width. The first
-/// separator trades with Name, which keeps at least NAME_MIN of its `name` width.
-pub fn resize(start: [f32; 6], i: usize, d: f32, name: f32) -> [f32; 6] {
-    const MIN: f32 = 32.0;
+/// Widths after dragging a separator by `d` DIPs, from `start`. Only that separator moves: the
+/// columns on its two sides (`left`, `right`, by `Col::num`; `left` None is Name) trade width.
+/// Name keeps at least NAME_MIN of its `name` width.
+pub fn resize(start: [f32; 6], left: Option<usize>, right: usize, d: f32, name: f32) -> [f32; 6] {
     const NAME_MIN: f32 = 120.0;
     let mut w = start;
-    if i == 0 {
-        w[0] = (start[0] - d).clamp(MIN, start[0].max(MIN) + (name - NAME_MIN).max(0.0));
-    } else {
-        let d = d.clamp(-(start[i - 1] - MIN).max(0.0), (start[i] - MIN).max(0.0));
-        w[i - 1] += d;
-        w[i] -= d;
+    match left {
+        None => w[right] = (start[right] - d).clamp(MIN_WIDTH, start[right].max(MIN_WIDTH) + (name - NAME_MIN).max(0.0)),
+        Some(l) => {
+            let d = d.clamp(-(start[l] - MIN_WIDTH).max(0.0), (start[right] - MIN_WIDTH).max(0.0));
+            w[l] += d;
+            w[right] -= d;
+        }
     }
     w
 }
+
+pub const MIN_WIDTH: f32 = 40.0;
 
 /// Search box left and right edges: centered in the title bar, between the app name and the
 /// caption buttons.
@@ -97,18 +102,39 @@ pub fn caption_at(x: f32, y: f32, width: f32) -> Option<usize> {
     (y < CAPTION.1 && x >= x0).then(|| (((x - x0) / CAPTION.0) as usize).min(2))
 }
 
-/// Navigation pane row under a point: 0 the menu button, 1 Processes, 2 Performance.
-pub fn nav_at(x: f32, y: f32, open: bool) -> Option<usize> {
-    if x >= nav_width(open) || y < NAV_TOP {
-        return None;
-    }
-    let k = ((y - NAV_TOP) / NAV_ROW) as usize;
-    (k < 3 && y - NAV_TOP - k as f32 * NAV_ROW < NAV_ROW - 4.0).then_some(k)
+/// Navigation pane rows: 0 the menu button, 1 Processes, 2 Performance, 3 Windows Task Manager
+/// (at the bottom). Top and bottom of row `k` in a window `height` DIPs tall.
+pub fn nav_row(k: usize, height: f32) -> (f32, f32) {
+    let top = if k == 3 { (height - 4.0 - NAV_ROW).max(NAV_TOP + 3.0 * NAV_ROW) } else { NAV_TOP + k as f32 * NAV_ROW };
+    (top, top + NAV_ROW - 4.0)
 }
 
-/// The End task button in the page header.
-pub fn end_task(width: f32) -> D2D_RECT_F {
-    rect(width - PAD - 108.0, TITLE + 10.0, width - PAD, TITLE + 42.0)
+pub const NAV_ITEMS: usize = 4;
+
+/// Navigation pane row under a point.
+pub fn nav_at(x: f32, y: f32, nav_w: f32, height: f32) -> Option<usize> {
+    if x >= nav_w || y < NAV_TOP {
+        return None;
+    }
+    (0..NAV_ITEMS).find(|&k| {
+        let (t, b) = nav_row(k, height);
+        (t..b).contains(&y)
+    })
+}
+
+/// Page header buttons, right to left: (id, rect). 0 Run new task, 1 End task (Processes only).
+pub fn commands(width: f32, performance: bool) -> Vec<(usize, D2D_RECT_F)> {
+    let end = rect(width - PAD - 108.0, TITLE + 10.0, width - PAD, TITLE + 42.0);
+    if performance {
+        return vec![(0, rect(width - PAD - 140.0, TITLE + 10.0, width - PAD, TITLE + 42.0))];
+    }
+    vec![(0, rect(end.left - 8.0 - 140.0, end.top, end.left - 8.0, end.bottom)), (1, end)]
+}
+
+/// Search box text area, left and right edges: after the magnifier, before the clear button.
+pub fn search_text(width: f32, has_text: bool) -> (f32, f32) {
+    let (l, r) = search(width);
+    (l + 34.0, r - if has_text { CLEAR + 4.0 } else { 10.0 })
 }
 
 /// The element under the mouse, for hover states.
@@ -119,8 +145,18 @@ pub enum Hot {
     Nav(usize),
     Search,
     SearchClear,
-    EndTask,
+    Command(usize),
     Caption(usize),
+}
+
+/// Where the keyboard is. Tab and Shift+Tab go through these in order.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Focus {
+    Search,
+    Nav(usize),
+    Command(usize),
+    Header(usize), // index in the shown columns
+    Rows,
 }
 
 /// Rows that fit in a client area `height` DIPs tall.
@@ -129,14 +165,14 @@ pub fn rows_visible(height: f32) -> usize {
 }
 
 /// Top and bottom of the scroll bar thumb; None when every row fits.
-pub fn thumb(height: f32, rows: usize, scroll: usize) -> Option<(f32, f32)> {
+pub fn thumb(height: f32, rows: usize, scroll: f32) -> Option<(f32, f32)> {
     let n = rows_visible(height);
     if rows <= n {
         return None;
     }
     let (top, h) = (TOP + HEAD, height - TOP - HEAD);
     let len = (h * n as f32 / rows as f32).max(24.0);
-    let y = top + (h - len) * scroll as f32 / (rows - n) as f32;
+    let y = top + (h - len) * (scroll / (rows - n) as f32).clamp(0.0, 1.0);
     Some((y, y + len))
 }
 
@@ -149,7 +185,7 @@ pub fn chevron_x(row: &Row, name_x0: f32) -> f32 {
 pub struct Renderer {
     factory: ID2D1Factory1,
     dwrite: IDWriteFactory,
-    formats: [IDWriteTextFormat; 8], // indexed by NAME, SECTION, ...
+    formats: [IDWriteTextFormat; 11], // indexed by NAME, SECTION, ...
     // Text layouts of this frame and the previous one. Shaping text is most of the paint time,
     // and most cells show the same text as one frame ago.
     layouts: HashMap<LayoutKey, IDWriteTextLayout>,
@@ -157,8 +193,13 @@ pub struct Renderer {
     dim: u32, // color baked into cached layouts (the dimmed detail text)
     target: Option<Target>,                         // created on first paint, dropped when the device is lost
     bitmaps: HashMap<String, Option<ID2D1Bitmap1>>, // per exe path; belong to the target
+    /// How far the search text is scrolled left in its box, so the caret stays in view.
+    search_off: f32,
+    search_layout: Option<(String, IDWriteTextLayout)>,
     /// The caller already waited on `waitable()`: the frame slot is taken.
     pub ready: bool,
+    /// Test instances (SUPRVISOR_TEST): write the next frame to this BMP file.
+    pub snap: Option<String>,
     started: std::time::Instant, // this paint, for the trace
 }
 
@@ -267,6 +308,9 @@ const HEAD_LABEL: usize = 4;
 const HEAD_LABEL_LEFT: usize = 5;
 const GLYPH: usize = 6;
 const ICON: usize = 7; // navigation and button icons
+const SEARCH: usize = 8; // the search text: no trimming
+const TINY: usize = 9; // core numbers on the CPU cores graphs
+const TINY_VALUE: usize = 10;
 
 /// Format, box size in 1/4 DIPs, where the dimmed part starts, text.
 type LayoutKey = (usize, u32, u32, u32, String);
@@ -334,18 +378,57 @@ fn gb(b: u64) -> f64 {
     b as f64 / (1u64 << 30) as f64
 }
 
+/// The text of a numeric cell.
+pub fn cell(row: &Row, c: Col) -> String {
+    let v = &row.v;
+    match c {
+        Col::Name => row.label.clone(),
+        Col::Cpu => pct(v.cpu),
+        Col::Ram => bytes(v.ram),
+        Col::Gpu => pct(v.gpu),
+        Col::Vram => bytes(v.vram),
+        Col::Disk => match (mbs(v.read), mbs(v.write)) {
+            (r, w) if r == "0" && w == "0" => "0 MB/s".into(),
+            (r, w) => format!("{r} / {w} MB/s"),
+        },
+        Col::Pid => row.pid.map(|p| p.to_string()).unwrap_or_default(),
+    }
+}
+
+/// The machine total over a column header.
+pub fn total(s: &System, c: Col) -> String {
+    let share = |used: u64, total: u64| if total > 0 { format!("{:.0}%", used as f64 * 100.0 / total as f64) } else { String::new() };
+    match c {
+        Col::Name | Col::Pid => String::new(),
+        Col::Cpu => pct(s.cpu),
+        Col::Ram => share(s.ram_used, s.ram_total),
+        Col::Gpu => pct(s.gpu),
+        Col::Vram => share(s.vram_used, s.vram_total),
+        Col::Disk => format!("{} MB/s", mbs(s.disk_read + s.disk_write)),
+    }
+}
+
 pub struct Frame<'a> {
     pub table: &'a Table,
     pub system: &'a System,
     pub icons: &'a HashMap<String, Arc<Icon>>,
-    pub widths: &'a [f32; 6],
+    pub app_icon: Option<&'a Icon>,
+    /// Shown columns at their drawn positions (moving while a column is dragged or slides).
+    pub cols: &'a [(Col, f32, f32)],
+    /// The column being dragged to a new place: drawn last, lifted.
+    pub dragging: Option<Col>,
     pub processes: usize,
     pub performance: bool,
     pub history: &'a VecDeque<System>,
-    pub nav_open: bool,
-    pub focus: bool, // the search box has the keyboard
+    pub nav_w: f32,    // navigation pane width, animated
+    pub nav_pill: f32, // center of the selection pill in the navigation pane, animated
+    pub search: &'a Edit,
+    pub caret: bool, // the caret is in its on phase
+    pub focus: Option<Focus>,
+    pub focus_visible: bool, // the keyboard moved the focus: show the focus ring
     pub hot: Hot,
     pub can_end: bool, // a process or group is selected
+    pub ending: usize, // selected rows End task acts on, for the button label
     pub maximized: bool,
 }
 
@@ -361,12 +444,21 @@ struct Brushes {
     band: ID2D1SolidColorBrush, // the sorted column, under the rows
     line: ID2D1SolidColorBrush,
     layer: ID2D1SolidColorBrush,
+    lifted: ID2D1SolidColorBrush, // a dragged column
+    shadow: ID2D1SolidColorBrush,
     close: ID2D1SolidColorBrush, // close button, hovered
     white: ID2D1SolidColorBrush,
+    ring: ID2D1SolidColorBrush, // keyboard focus
+    ring_in: ID2D1SolidColorBrush,
+    fill: ID2D1LinearGradientBrush, // area under a graph line
 }
 
 fn rounded(l: f32, t: f32, r: f32, b: f32, radius: f32) -> D2D1_ROUNDED_RECT {
     D2D1_ROUNDED_RECT { rect: rect(l, t, r, b), radiusX: radius, radiusY: radius }
+}
+
+fn v2(x: f32, y: f32) -> windows_numerics::Vector2 {
+    windows_numerics::Vector2 { X: x, Y: y }
 }
 
 /// One Performance graph.
@@ -391,7 +483,7 @@ fn graphs(s: &System, h: &VecDeque<System>) -> [Graph; 6] {
     let disk = |s: &System| (s.disk_read + s.disk_write) as f64;
     let net = |s: &System| (s.net_recv + s.net_sent) as f64;
     [
-        Graph { name: "CPU", value: pct(s.cpu), detail: String::new(), max: 100.0, series: series(&|s| s.cpu as f64) },
+        Graph { name: "CPU", value: pct(s.cpu), detail: format!("{} logical processors", s.cores.len()), max: 100.0, series: series(&|s| s.cpu as f64) },
         Graph {
             name: "Memory",
             value: format!("{:.1} / {:.0} GB", gb(s.ram_used), gb(s.ram_total)),
@@ -424,12 +516,22 @@ fn graphs(s: &System, h: &VecDeque<System>) -> [Graph; 6] {
     ]
 }
 
+/// Columns for a grid of `n` cells in a `w` x `h` area: the count that gives the biggest cells
+/// with a width about `aspect` times their height.
+pub fn grid(n: usize, w: f32, h: f32, aspect: f32) -> usize {
+    let size = |c: usize| (w / c as f32 / aspect).min(h / n.div_ceil(c) as f32);
+    (1..=n.max(1)).max_by(|&a, &b| size(a).total_cmp(&size(b))).unwrap_or(1)
+}
+
 impl Renderer {
     pub fn new() -> Result<Self> {
         let factory: ID2D1Factory1 = unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
         let dwrite: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
         let text = w!("Segoe UI Variable Text");
         let (lead, trail) = (DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_TEXT_ALIGNMENT_TRAILING);
+        let search = format(&dwrite, text, 13.0, DWRITE_FONT_WEIGHT_NORMAL, lead)?;
+        // The search text scrolls inside its box: never cut it with an ellipsis.
+        unsafe { search.SetTrimming(&DWRITE_TRIMMING::default(), None)? };
         Ok(Self {
             formats: [
                 format(&dwrite, text, 13.0, DWRITE_FONT_WEIGHT_NORMAL, lead)?,
@@ -440,6 +542,9 @@ impl Renderer {
                 format(&dwrite, text, 12.0, DWRITE_FONT_WEIGHT_NORMAL, lead)?,
                 format(&dwrite, w!("Segoe Fluent Icons"), 10.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
                 format(&dwrite, w!("Segoe Fluent Icons"), 16.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
+                search,
+                format(&dwrite, text, 10.0, DWRITE_FONT_WEIGHT_NORMAL, lead)?,
+                format(&dwrite, text, 10.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, trail)?,
             ],
             layouts: HashMap::new(),
             prev: HashMap::new(),
@@ -448,7 +553,10 @@ impl Renderer {
             factory,
             target: None,
             bitmaps: HashMap::new(),
+            search_off: 0.0,
+            search_layout: None,
             ready: false,
+            snap: None,
             started: std::time::Instant::now(),
         })
     }
@@ -481,11 +589,11 @@ impl Renderer {
         Ok(self.target.as_ref().unwrap().dc.clone())
     }
 
-    fn bitmap(&mut self, t: &ID2D1DeviceContext, path: &str, icons: &HashMap<String, Arc<Icon>>) -> Option<ID2D1Bitmap1> {
+    fn bitmap(&mut self, t: &ID2D1DeviceContext, path: &str, icon: Option<&Icon>) -> Option<ID2D1Bitmap1> {
         if let Some(b) = self.bitmaps.get(path) {
             return b.clone();
         }
-        let icon = icons.get(path)?; // not loaded yet: try again next paint
+        let icon = icon?; // not loaded yet: try again next paint
         let props = D2D1_BITMAP_PROPERTIES1 { pixelFormat: pixel_format(), dpiX: 96.0, dpiY: 96.0, ..Default::default() };
         let size = D2D_SIZE_U { width: icon.size, height: icon.size };
         let b = unsafe { t.CreateBitmap(size, Some(icon.bgra.as_ptr().cast()), icon.size * 4, &props) }.ok();
@@ -506,57 +614,91 @@ impl Renderer {
         }
     }
 
-    /// The Performance tab: a grid of 60 s graphs under the page header.
+    /// A 60 s graph of `series` (oldest first, one value per second) in `r`, 0 at the bottom and
+    /// `max` at the top: a line over a fill that fades down.
+    #[allow(clippy::too_many_arguments)]
+    fn plot(&self, t: &ID2D1DeviceContext, r: D2D_RECT_F, series: &[f64], max: f64, b: &Brushes, grid: bool, width: f32) -> Result<()> {
+        unsafe {
+            t.DrawRectangle(&rect(r.left + 0.5, r.top + 0.5, r.right - 0.5, r.bottom - 0.5), &b.line, 1.0, None);
+            if grid {
+                for k in 1..4 {
+                    let y = r.top + (r.bottom - r.top) * k as f32 / 4.0;
+                    t.DrawLine(v2(r.left, y), v2(r.right, y), &b.line, 0.5, None);
+                }
+            }
+        }
+        if series.len() < 2 || max <= 0.0 {
+            return Ok(());
+        }
+        // 60 one-second slots; the newest sample at the right edge.
+        let step = (r.right - r.left) / 59.0;
+        let n = series.len();
+        let y = |v: f64| r.bottom - ((v / max).clamp(0.0, 1.0) as f32) * (r.bottom - r.top);
+        let mut pts: Vec<windows_numerics::Vector2> = series.iter().enumerate().map(|(k, &v)| v2(r.right - (n - 1 - k) as f32 * step, y(v))).collect();
+        let line = self.path(&pts, false)?;
+        pts.push(v2(r.right, r.bottom));
+        pts.push(v2(r.right - (n - 1) as f32 * step, r.bottom));
+        let area = self.path(&pts, true)?;
+        unsafe {
+            b.fill.SetStartPoint(v2(0.0, r.top));
+            b.fill.SetEndPoint(v2(0.0, r.bottom));
+            t.PushAxisAlignedClip(&r, D2D1_ANTIALIAS_MODE_ALIASED);
+            t.FillGeometry(&area, &b.fill, None);
+            t.DrawGeometry(&line, &b.accent, width, None);
+            t.PopAxisAlignedClip();
+        }
+        Ok(())
+    }
+
+    /// The Performance tab: a grid of 60 s graphs under the page header, and a row with one small
+    /// graph per logical processor.
     fn performance(&mut self, t: &ID2D1DeviceContext, size: D2D_SIZE_F, f: &Frame, b: &Brushes) -> Result<()> {
         const GAP: f32 = 12.0;
-        let (text, dim, accent, tile, line) = (&b.text, &b.dim, &b.accent, &b.hover, &b.line);
-        let fill = unsafe { t.CreateSolidColorBrush(&color(0, 0.0), None)? };
-        unsafe { fill.SetColor(&{ let mut c = accent.GetColor(); c.a = 0.2; c }) };
-        let (x0, y0, x1, y1) = (nav_width(f.nav_open) + PAD, TOP + PAD, size.width - PAD, size.height - PAD);
+        let (x0, y0, x1, y1) = (f.nav_w + PAD, TOP + PAD, size.width - PAD, size.height - PAD);
         let cols = if x1 - x0 >= 900.0 { 3 } else if x1 - x0 >= 560.0 { 2 } else { 1 };
-        let rows = 6usize.div_ceil(cols);
+        let rows = 6usize.div_ceil(cols) + 1;
         let w = (x1 - x0 - GAP * (cols - 1) as f32) / cols as f32;
         let h = (y1 - y0 - GAP * (rows - 1) as f32) / rows as f32;
+        let tile = |t: &ID2D1DeviceContext, l: f32, top: f32, r: f32| unsafe { t.FillRoundedRectangle(&rounded(l, top, r, top + h, 6.0), &b.hover) };
         for (i, g) in graphs(f.system, f.history).iter().enumerate() {
             let l = x0 + (i % cols) as f32 * (w + GAP);
             let top = y0 + (i / cols) as f32 * (h + GAP);
             let r = l + w;
-            unsafe { t.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: rect(l, top, r, top + h), radiusX: 6.0, radiusY: 6.0 }, tile) };
-            self.text(t, g.name, SECTION, rect(l + 12.0, top + 6.0, r - 12.0, top + 30.0), text);
-            self.text(t, &g.value, HEAD_VALUE, rect(l + 12.0, top + 6.0, r - 12.0, top + 30.0), text);
-            self.text(t, &g.detail, HEAD_LABEL_LEFT, rect(l + 12.0, top + 30.0, r - 12.0, top + 48.0), dim);
-            let (gl, gt, gr, gb) = (l + 12.0, top + 54.0, r - 12.0, top + h - 12.0);
-            if gb - gt < 8.0 {
-                continue;
+            tile(t, l, top, r);
+            self.text(t, g.name, SECTION, rect(l + 12.0, top + 6.0, r - 12.0, top + 30.0), &b.text);
+            self.text(t, &g.value, HEAD_VALUE, rect(l + 12.0, top + 6.0, r - 12.0, top + 30.0), &b.text);
+            self.text(t, &g.detail, HEAD_LABEL_LEFT, rect(l + 12.0, top + 30.0, r - 12.0, top + 48.0), &b.dim);
+            let g_r = rect(l + 12.0, top + 54.0, r - 12.0, top + h - 12.0);
+            if g_r.bottom - g_r.top >= 8.0 {
+                self.plot(t, g_r, &g.series, g.max, b, true, 1.5)?;
             }
-            unsafe {
-                t.DrawRectangle(&rect(gl + 0.5, gt + 0.5, gr - 0.5, gb - 0.5), line, 1.0, None);
-                for k in 1..4 {
-                    let y = gt + (gb - gt) * k as f32 / 4.0;
-                    t.DrawLine(windows_numerics::Vector2 { X: gl, Y: y }, windows_numerics::Vector2 { X: gr, Y: y }, line, 0.5, None);
-                }
-            }
-            if g.series.len() < 2 || g.max <= 0.0 {
-                continue;
-            }
-            // 60 one-second slots; the newest sample at the right edge.
-            let step = (gr - gl) / 59.0;
-            let n = g.series.len();
-            let mut pts: Vec<windows_numerics::Vector2> = g
-                .series
-                .iter()
-                .enumerate()
-                .map(|(k, v)| windows_numerics::Vector2 { X: gr - (n - 1 - k) as f32 * step, Y: gb - ((v / g.max).clamp(0.0, 1.0) as f32) * (gb - gt) })
-                .collect();
-            let line_path = self.path(&pts, false)?;
-            pts.push(windows_numerics::Vector2 { X: gr, Y: gb });
-            pts.push(windows_numerics::Vector2 { X: gr - (n - 1) as f32 * step, Y: gb });
-            let area = self.path(&pts, true)?;
-            unsafe {
-                t.PushAxisAlignedClip(&rect(gl, gt, gr, gb), D2D1_ANTIALIAS_MODE_ALIASED);
-                t.FillGeometry(&area, &fill, None);
-                t.DrawGeometry(&line_path, accent, 1.5, None);
-                t.PopAxisAlignedClip();
+        }
+
+        // One graph per logical processor, across the last row.
+        let top = y0 + (rows - 1) as f32 * (h + GAP);
+        tile(t, x0, top, x1);
+        let cores = &f.system.cores;
+        let busiest = cores.iter().copied().fold(0.0, f32::max);
+        self.text(t, "CPU cores", SECTION, rect(x0 + 12.0, top + 6.0, x1 - 12.0, top + 30.0), &b.text);
+        self.text(t, &format!("busiest {}", pct(busiest)), HEAD_VALUE, rect(x0 + 12.0, top + 6.0, x1 - 12.0, top + 30.0), &b.text);
+        let (gl, gt, gr, gb) = (x0 + 12.0, top + 36.0, x1 - 12.0, top + h - 12.0);
+        let n = cores.len();
+        if n == 0 || gb - gt < 16.0 {
+            return Ok(());
+        }
+        const CELL_GAP: f32 = 6.0;
+        let c = grid(n, gr - gl, gb - gt, 1.6);
+        let r = n.div_ceil(c);
+        let cw = (gr - gl - CELL_GAP * (c - 1) as f32) / c as f32;
+        let ch = (gb - gt - CELL_GAP * (r - 1) as f32) / r as f32;
+        for (k, v) in cores.iter().enumerate() {
+            let l = gl + (k % c) as f32 * (cw + CELL_GAP);
+            let tp = gt + (k / c) as f32 * (ch + CELL_GAP);
+            let series: Vec<f64> = f.history.iter().map(|s| s.cores.get(k).copied().unwrap_or(0.0) as f64).collect();
+            self.plot(t, rect(l, tp, l + cw, tp + ch), &series, 100.0, b, false, 1.0)?;
+            if ch >= 22.0 && cw >= 40.0 {
+                self.text(t, &k.to_string(), TINY, rect(l + 4.0, tp + 1.0, l + cw - 4.0, tp + 14.0), &b.dim);
+                self.text(t, &format!("{v:.0}%"), TINY_VALUE, rect(l + 4.0, tp + 1.0, l + cw - 4.0, tp + 14.0), &b.dim);
             }
         }
         Ok(())
@@ -569,7 +711,7 @@ impl Renderer {
     /// Draws `s` in `r`; from UTF-16 index `dim.0` on, in the `dim.1` brush.
     fn text_dim(&mut self, t: &ID2D1DeviceContext, s: &str, f: usize, r: D2D_RECT_F, b: &ID2D1SolidColorBrush, dim: Option<(u32, &ID2D1SolidColorBrush)>) {
         if let Some(layout) = self.layout(s, f, r, dim) {
-            unsafe { t.DrawTextLayout(windows_numerics::Vector2 { X: r.left, Y: r.top }, &layout, b, D2D1_DRAW_TEXT_OPTIONS_CLIP) };
+            unsafe { t.DrawTextLayout(v2(r.left, r.top), &layout, b, D2D1_DRAW_TEXT_OPTIONS_CLIP) };
         }
     }
 
@@ -591,88 +733,231 @@ impl Renderer {
         Some(layout)
     }
 
+    /// Width of `s` as a cell (or a header total), for fitting a column to its content.
+    pub fn measure(&mut self, s: &str, header: bool) -> f32 {
+        let f = if header { HEAD_VALUE } else { NUM };
+        let Ok(l) = (unsafe { self.dwrite.CreateTextLayout(&utf16(s), &self.formats[f], 4000.0, 20.0) }) else { return 0.0 };
+        let mut m = DWRITE_TEXT_METRICS::default();
+        unsafe { l.GetMetrics(&mut m) }.map_or(0.0, |_| m.width)
+    }
+
+    /// The search text's layout: unbounded width, so it never wraps or trims; the box clips it.
+    fn search_layout(&mut self, s: &str) -> Option<IDWriteTextLayout> {
+        if let Some((text, l)) = &self.search_layout
+            && text == s
+        {
+            return Some(l.clone());
+        }
+        let l = unsafe { self.dwrite.CreateTextLayout(&utf16(s), &self.formats[SEARCH], 100_000.0, SEARCH_Y.1 - SEARCH_Y.0) }.ok()?;
+        self.search_layout = Some((s.to_owned(), l.clone()));
+        Some(l)
+    }
+
+    /// X of UTF-16 position `pos` in the search text, from the text's left edge.
+    fn search_x(&mut self, s: &str, pos: u32) -> f32 {
+        let Some(l) = self.search_layout(s) else { return 0.0 };
+        let (mut x, mut y, mut m) = (0.0, 0.0, DWRITE_HIT_TEST_METRICS::default());
+        let _ = unsafe { l.HitTestTextPosition(pos, false, &mut x, &mut y, &mut m) };
+        x
+    }
+
+    /// UTF-16 position in the search text nearest to `x` DIPs from the text area's left edge.
+    pub fn search_index(&mut self, s: &str, x: f32) -> u32 {
+        let off = self.search_off;
+        let Some(l) = self.search_layout(s) else { return 0 };
+        let (mut trailing, mut inside, mut m) = (Default::default(), Default::default(), DWRITE_HIT_TEST_METRICS::default());
+        let _ = unsafe { l.HitTestPoint(x + off, 10.0, &mut trailing, &mut inside, &mut m) };
+        m.textPosition + if trailing.as_bool() { m.length } else { 0 }
+    }
+
+    /// The keyboard focus ring of Windows 11: a 2 DIP outer stroke and a 1 DIP inner one.
+    fn ring(&self, t: &ID2D1DeviceContext, r: D2D_RECT_F, radius: f32, b: &Brushes) {
+        unsafe {
+            t.DrawRoundedRectangle(&rounded(r.left - 1.0, r.top - 1.0, r.right + 1.0, r.bottom + 1.0, radius + 1.0), &b.ring, 2.0, None);
+            t.DrawRoundedRectangle(&rounded(r.left + 0.5, r.top + 0.5, r.right - 0.5, r.bottom - 0.5, (radius - 0.5).max(0.0)), &b.ring_in, 1.0, None);
+        }
+    }
+
+    fn ring_on(&self, f: &Frame, focus: Focus) -> bool {
+        f.focus_visible && f.focus == Some(focus)
+    }
+
+    /// The search box: text, selection, caret, clear button.
+    fn search_box(&mut self, t: &ID2D1DeviceContext, w: f32, f: &Frame, b: &Brushes) {
+        let (sl, sr) = search(w);
+        let (st, sb) = SEARCH_Y;
+        let focused = f.focus == Some(Focus::Search);
+        let e = f.search;
+        unsafe {
+            // Fluent text box: lighter on hover; on focus, the layer color and an accent underline.
+            let fill = if focused { &b.layer } else if matches!(f.hot, Hot::Search | Hot::SearchClear) { &b.selected } else { &b.hover };
+            t.FillRoundedRectangle(&rounded(sl, st, sr, sb, 4.0), fill);
+            t.DrawRoundedRectangle(&rounded(sl + 0.5, st + 0.5, sr - 0.5, sb - 0.5, 4.0), &b.line, 1.0, None);
+            let under = if focused { 2.0 } else { 1.0 };
+            t.FillRectangle(&rect(sl + 3.0, sb - under, sr - 3.0, sb), if focused { &b.accent } else { &b.strong });
+        }
+        self.text(t, "\u{E721}", GLYPH, rect(sl + 8.0, st, sl + 28.0, sb), &b.dim);
+        let (tl, tr) = search_text(w, !e.text.is_empty());
+        if e.text.is_empty() {
+            self.search_off = 0.0;
+            self.text(t, "Type a name, window title, or PID to filter", NAME, rect(tl, st, tr, sb), &b.dim);
+        } else {
+            let r = rect(sr - CLEAR, st + 4.0, sr - 4.0, sb - 4.0);
+            if f.hot == Hot::SearchClear {
+                unsafe { t.FillRoundedRectangle(&rounded(r.left, r.top, r.right, r.bottom, 3.0), &b.hover) };
+            }
+            self.text(t, "\u{E894}", GLYPH, r, &b.dim);
+        }
+        let Some(layout) = self.search_layout(&e.text) else { return };
+        // Scroll the text so the caret stays inside the box, and no space is left at the end.
+        let box_w = tr - tl;
+        let caret_x = self.search_x(&e.text, e.utf16(e.caret));
+        let mut m = DWRITE_TEXT_METRICS::default();
+        let text_w = unsafe { layout.GetMetrics(&mut m) }.map_or(0.0, |_| m.widthIncludingTrailingWhitespace);
+        let mut off = self.search_off.min((text_w - box_w + 2.0).max(0.0));
+        if caret_x - off > box_w - 2.0 {
+            off = caret_x - box_w + 2.0;
+        }
+        if caret_x - off < 0.0 {
+            off = caret_x;
+        }
+        self.search_off = off.max(0.0);
+        let x = tl - self.search_off;
+        let (a, z) = e.selection();
+        let (ua, uz) = (e.utf16(a), e.utf16(z));
+        let shown = focused && a != z;
+        let (xa, xz) = if shown { (self.search_x(&e.text, ua), self.search_x(&e.text, uz)) } else { (0.0, 0.0) };
+        unsafe {
+            t.PushAxisAlignedClip(&rect(tl - 1.0, st, tr + 1.0, sb), D2D1_ANTIALIAS_MODE_ALIASED);
+            if shown {
+                // Selected text: white on the accent, like the Windows edit control.
+                t.FillRectangle(&rect(x + xa, st + 7.0, x + xz, sb - 7.0), &b.accent);
+                let _ = layout.SetDrawingEffect(&b.white, DWRITE_TEXT_RANGE { startPosition: ua, length: uz - ua });
+            }
+            t.DrawTextLayout(v2(x, st), &layout, &b.text, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            if shown {
+                let _ = layout.SetDrawingEffect(&b.text, DWRITE_TEXT_RANGE { startPosition: 0, length: u32::MAX });
+            }
+            if focused && f.caret {
+                let cx = (x + caret_x).round() + 0.5;
+                t.DrawLine(v2(cx, st + 8.0), v2(cx, sb - 8.0), &b.text, 1.0, None);
+            }
+            t.PopAxisAlignedClip();
+        }
+    }
+
     /// Title bar, navigation pane, content layer and page header.
     fn chrome(&mut self, t: &ID2D1DeviceContext, size: D2D_SIZE_F, f: &Frame, b: &Brushes) {
         let (w, h) = (size.width, size.height);
-        let cl = nav_width(f.nav_open);
+        let cl = f.nav_w;
         unsafe {
             // Content layer: solid, rounded at its top-left corner. Its other corners are off screen.
             t.FillRoundedRectangle(&rounded(cl, TITLE, w + 8.0, h + 8.0, 8.0), &b.layer);
             t.DrawRoundedRectangle(&rounded(cl + 0.5, TITLE + 0.5, w + 8.0, h + 8.0, 8.0), &b.line, 1.0, None);
+        }
 
-            // Title bar.
-            self.text(t, "\u{E9D9}", ICON, rect(12.0, 0.0, 36.0, TITLE), &b.accent);
-            self.text(t, "Suprvisor", HEAD_LABEL_LEFT, rect(44.0, 0.0, 140.0, TITLE), &b.text);
-            let (sl, sr) = search(w);
-            let (st, sb) = SEARCH_Y;
-            // Fluent text box: lighter on hover; on focus, the layer color and an accent underline.
-            let fill = if f.focus { &b.layer } else if matches!(f.hot, Hot::Search | Hot::SearchClear) { &b.selected } else { &b.hover };
-            t.FillRoundedRectangle(&rounded(sl, st, sr, sb, 4.0), fill);
-            t.DrawRoundedRectangle(&rounded(sl + 0.5, st + 0.5, sr - 0.5, sb - 0.5, 4.0), &b.line, 1.0, None);
-            let under = if f.focus { 2.0 } else { 1.0 };
-            t.FillRectangle(&rect(sl + 3.0, sb - under, sr - 3.0, sb), if f.focus { &b.accent } else { &b.strong });
-            self.text(t, "\u{E721}", GLYPH, rect(sl + 8.0, st, sl + 28.0, sb), &b.dim);
-            let filter = f.table.filter.as_str();
-            let tr = rect(sl + 34.0, st, sr - if filter.is_empty() { 10.0 } else { CLEAR + 4.0 }, sb);
-            if filter.is_empty() {
-                self.text(t, "Type a name, window title, or PID to filter", NAME, tr, &b.dim);
-            } else {
-                self.text(t, filter, NAME, tr, &b.text);
-                let r = rect(sr - CLEAR, st + 4.0, sr - 4.0, sb - 4.0);
-                if f.hot == Hot::SearchClear {
-                    t.FillRoundedRectangle(&rounded(r.left, r.top, r.right, r.bottom, 3.0), &b.hover);
-                }
-                self.text(t, "\u{E894}", GLYPH, r, &b.dim);
+        // Title bar.
+        match f.app_icon.and_then(|i| self.bitmap(t, "\0app", Some(i))) {
+            Some(bm) => unsafe { t.DrawBitmap(&bm, Some(&rect(16.0, 16.0, 32.0, 32.0)), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None) },
+            None => self.text(t, "\u{E9D9}", ICON, rect(12.0, 0.0, 36.0, TITLE), &b.accent),
+        }
+        self.text(t, "Suprvisor", HEAD_LABEL_LEFT, rect(44.0, 0.0, 140.0, TITLE), &b.text);
+        self.search_box(t, w, f, b);
+        let x0 = w - 3.0 * CAPTION.0;
+        for k in 0..3 {
+            let r = rect(x0 + k as f32 * CAPTION.0, 0.0, x0 + (k + 1) as f32 * CAPTION.0, CAPTION.1);
+            let hot = f.hot == Hot::Caption(k);
+            if hot {
+                unsafe { t.FillRectangle(&r, if k == 2 { &b.close } else { &b.hover }) };
             }
-            if f.focus {
-                let mut m = DWRITE_TEXT_METRICS::default();
-                let width = self.layout(filter, NAME, tr, None).and_then(|l| l.GetMetrics(&mut m).ok()).map_or(0.0, |_| m.widthIncludingTrailingWhitespace);
-                let x = (tr.left + width).min(tr.right).round() + 0.5;
-                t.DrawLine(windows_numerics::Vector2 { X: x, Y: st + 8.0 }, windows_numerics::Vector2 { X: x, Y: sb - 8.0 }, &b.text, 1.0, None);
-            }
-            let x0 = w - 3.0 * CAPTION.0;
-            for k in 0..3 {
-                let r = rect(x0 + k as f32 * CAPTION.0, 0.0, x0 + (k + 1) as f32 * CAPTION.0, CAPTION.1);
-                let hot = f.hot == Hot::Caption(k);
-                if hot {
-                    t.FillRectangle(&r, if k == 2 { &b.close } else { &b.hover });
-                }
-                let glyph = ["\u{E921}", if f.maximized { "\u{E923}" } else { "\u{E922}" }, "\u{E8BB}"][k];
-                self.text(t, glyph, GLYPH, r, if hot && k == 2 { &b.white } else { &b.text });
-            }
+            let glyph = ["\u{E921}", if f.maximized { "\u{E923}" } else { "\u{E922}" }, "\u{E8BB}"][k];
+            self.text(t, glyph, GLYPH, r, if hot && k == 2 { &b.white } else { &b.text });
+        }
 
-            // Navigation pane.
-            for (k, (glyph, label)) in [("\u{E700}", ""), ("\u{E71D}", "Processes"), ("\u{E9D9}", "Performance")].into_iter().enumerate() {
-                let top = NAV_TOP + k as f32 * NAV_ROW;
-                let (l, r, bot) = (4.0, cl - 4.0, top + NAV_ROW - 4.0);
-                let on = k > 0 && (k == 2) == f.performance;
+        // Navigation pane. Labels show as it opens; the pill slides to the open page.
+        unsafe { t.PushAxisAlignedClip(&rect(0.0, TITLE, cl, h), D2D1_ANTIALIAS_MODE_ALIASED) };
+        let items = [("\u{E700}", ""), ("\u{E71D}", "Processes"), ("\u{E9D9}", "Performance"), ("\u{E8A7}", "Windows Task Manager")];
+        for (k, (glyph, label)) in items.into_iter().enumerate() {
+            let (top, bot) = nav_row(k, h);
+            let (l, r) = (4.0, cl - 4.0);
+            let on = k > 0 && k < 3 && (k == 2) == f.performance;
+            unsafe {
                 if on {
                     t.FillRoundedRectangle(&rounded(l, top, r, bot, 4.0), &b.selected);
-                    let cy = (top + bot) / 2.0;
-                    t.FillRoundedRectangle(&rounded(l, cy - 8.0, l + 3.0, cy + 8.0, 1.5), &b.accent);
                 } else if f.hot == Hot::Nav(k) {
                     t.FillRoundedRectangle(&rounded(l, top, r, bot, 4.0), &b.hover);
                 }
-                self.text(t, glyph, ICON, rect(l, top, l + 40.0, bot), &b.text);
-                if f.nav_open {
-                    self.text(t, label, NAME, rect(l + 44.0, top, r - 8.0, bot), &b.text);
-                }
             }
+            self.text(t, glyph, ICON, rect(l, top, l + 40.0, bot), &b.text);
+            if cl > 60.0 {
+                self.text(t, label, NAME, rect(l + 44.0, top, l + 190.0, bot), &b.text);
+            }
+            if self.ring_on(f, Focus::Nav(k)) {
+                self.ring(t, rect(l, top, r, bot), 4.0, b);
+            }
+        }
+        unsafe {
+            let cy = f.nav_pill;
+            t.FillRoundedRectangle(&rounded(4.0, cy - 8.0, 7.0, cy + 8.0, 1.5), &b.accent);
+            t.PopAxisAlignedClip();
+        }
 
-            // Page header.
-            let x = cl + PAD + 4.0;
-            self.text(t, if f.performance { "Performance" } else { "Processes" }, SECTION, rect(x, TITLE, x + 160.0, TOP), &b.text);
-            if !f.performance {
-                self.text(t, &format!("{} processes", f.processes), NAME, rect(x + 96.0, TITLE, x + 260.0, TOP), &b.dim);
-                let r = end_task(w);
-                if f.can_end && f.hot == Hot::EndTask {
-                    t.FillRoundedRectangle(&rounded(r.left, r.top, r.right, r.bottom, 4.0), &b.hover);
-                }
-                let fg = if f.can_end { &b.text } else { &b.off };
-                self.text(t, "\u{E733}", ICON, rect(r.left + 4.0, r.top, r.left + 32.0, r.bottom), fg);
-                self.text(t, "End task", NAME, rect(r.left + 36.0, r.top, r.right - 8.0, r.bottom), fg);
+        // Page header.
+        let x = cl + PAD + 4.0;
+        self.text(t, if f.performance { "Performance" } else { "Processes" }, SECTION, rect(x, TITLE, x + 160.0, TOP), &b.text);
+        if !f.performance {
+            self.text(t, &format!("{} processes", f.processes), NAME, rect(x + 96.0, TITLE, x + 260.0, TOP), &b.dim);
+        }
+        for (k, r) in commands(w, f.performance) {
+            let enabled = k == 0 || f.can_end;
+            if enabled && f.hot == Hot::Command(k) {
+                unsafe { t.FillRoundedRectangle(&rounded(r.left, r.top, r.right, r.bottom, 4.0), &b.hover) };
             }
-            t.FillRectangle(&rect(cl + 1.0, TOP - 1.0, w, TOP), &b.line);
+            let fg = if enabled { &b.text } else { &b.off };
+            let (glyph, label) = match k {
+                0 => ("\u{E768}", "Run new task".to_owned()),
+                _ if f.ending > 1 => ("\u{E733}", format!("End {} tasks", f.ending)),
+                _ => ("\u{E733}", "End task".to_owned()),
+            };
+            self.text(t, glyph, ICON, rect(r.left + 4.0, r.top, r.left + 32.0, r.bottom), fg);
+            self.text(t, &label, NAME, rect(r.left + 36.0, r.top, r.right - 4.0, r.bottom), fg);
+            if self.ring_on(f, Focus::Command(k)) {
+                self.ring(t, r, 4.0, b);
+            }
+        }
+        unsafe { t.FillRectangle(&rect(cl + 1.0, TOP - 1.0, w, TOP), &b.line) };
+    }
+
+    /// One column header; `k` is its place among the shown columns.
+    #[allow(clippy::too_many_arguments)]
+    fn header(&mut self, t: &ID2D1DeviceContext, f: &Frame, b: &Brushes, k: usize, c: Col, x0: f32, x1: f32) {
+        let tb = f.table;
+        let sorted = tb.sort == c;
+        // Name's fills start at the content layer's edge, not at its text inset.
+        let fx0 = if k == 0 { x0 - PAD } else { x0 };
+        let hot = f.hot == Hot::Header(c);
+        unsafe {
+            if sorted || hot || f.dragging == Some(c) {
+                t.FillRectangle(&rect(fx0, TOP, x1, TOP + HEAD), if sorted && hot { &b.selected } else { &b.hover });
+            }
+            if k > 0 {
+                t.FillRectangle(&rect(x0, TOP + 8.0, x0 + 1.0, TOP + HEAD - 8.0), &b.line);
+            }
+        }
+        // The sorted column: filled header, full-contrast total. The other totals are dimmed, so
+        // the sorted one reads first.
+        let fg = if sorted { &b.text } else { &b.dim };
+        let (l, r) = (x0 + 8.0, x1 - 8.0);
+        self.text(t, &total(f.system, c), HEAD_VALUE, rect(l, TOP + 10.0, r, TOP + 32.0), fg);
+        let fmt = if c == Col::Name { HEAD_LABEL_LEFT } else { HEAD_LABEL };
+        self.text(t, c.label(), fmt, rect(l, TOP + 32.0, r, TOP + HEAD - 4.0), fg);
+        if sorted {
+            let g = if tb.desc { "\u{E70D}" } else { "\u{E70E}" };
+            let cx = (x0 + x1) / 2.0;
+            self.text(t, g, GLYPH, rect(cx - 8.0, TOP, cx + 8.0, TOP + 12.0), &b.dim);
+        }
+        if self.ring_on(f, Focus::Header(k)) {
+            self.ring(t, rect(fx0 + 2.0, TOP + 2.0, x1 - 2.0, TOP + HEAD - 2.0), 4.0, b);
         }
     }
 
@@ -688,6 +973,12 @@ impl Renderer {
         let dim = theme.text_secondary;
         let brush = |c: u32, a: f32| unsafe { t.CreateSolidColorBrush(&color(c, a), None) };
         let wash = if theme.dark { 0xFFFFFF } else { 0x000000 };
+        let stops = [D2D1_GRADIENT_STOP { position: 0.0, color: color(theme.accent, 0.38) }, D2D1_GRADIENT_STOP { position: 1.0, color: color(theme.accent, 0.04) }];
+        let fill = unsafe {
+            let s = ID2D1RenderTarget::CreateGradientStopCollection(&t, &stops, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP)?;
+            let p = D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES { startPoint: v2(0.0, 0.0), endPoint: v2(0.0, 1.0) };
+            t.CreateLinearGradientBrush(&p, None, &s)?
+        };
         let b = Brushes {
             text: brush(theme.text, 1.0)?,
             dim: brush(dim, 1.0)?,
@@ -699,133 +990,159 @@ impl Renderer {
             band: brush(wash, if theme.dark { 0.03 } else { 0.02 })?,
             line: brush(dim, 0.25)?,
             layer: brush(theme.layer, 1.0)?,
+            lifted: brush(if theme.dark { 0x2C2C2C } else { 0xFFFFFF }, 1.0)?,
+            shadow: brush(0x000000, if theme.dark { 0.45 } else { 0.14 })?,
             close: brush(0xC42B1C, 1.0)?,
             white: brush(0xFFFFFF, 1.0)?,
+            ring: brush(if theme.dark { 0xFFFFFF } else { 0x000000 }, 1.0)?,
+            ring_in: brush(if theme.dark { 0x000000 } else { 0xFFFFFF }, 0.7)?,
+            fill,
         };
-        let (text, dim_b, accent, hover, selected, line) = (&b.text, &b.dim, &b.accent, &b.hover, &b.selected, &b.line);
         if self.dim != dim {
             (self.dim, self.layouts, self.prev) = (dim, HashMap::new(), HashMap::new()); // theme changed
         }
         let tb = f.table;
-        let cols = columns(nav_width(f.nav_open), size.width, f.widths);
 
         unsafe {
             t.BeginDraw();
             t.Clear(Some(&color(0, 0.0))); // Mica shows through
-            self.chrome(&t, size, f, &b);
-            if f.performance {
-                self.performance(&t, size, f, &b)?;
-                return self.present(&t);
-            }
-
-            // Column headers: sort arrow on top, then the machine total, then the name.
-            let s = f.system;
-            let share = |used: u64, total: u64| if total > 0 { format!("{:.0}%", used as f64 * 100.0 / total as f64) } else { String::new() };
-            for (i, (c, &(x0, x1))) in COLS.iter().zip(&cols).enumerate() {
-                let (value, label) = match c {
-                    Col::Name => (String::new(), "Name"),
-                    Col::Pid => (String::new(), "PID"),
-                    Col::Cpu => (pct(s.cpu), "CPU"),
-                    Col::Ram => (share(s.ram_used, s.ram_total), "Memory"),
-                    Col::Gpu => (pct(s.gpu), "GPU"),
-                    Col::Vram => (share(s.vram_used, s.vram_total), "VRAM"),
-                    Col::Disk => (format!("{} MB/s", mbs(s.disk_read + s.disk_write)), "Disk r / w"),
-                };
-                // The sorted column: filled header, full-contrast total, a band down the rows.
-                // The other totals are dimmed, so the sorted one reads first.
-                // Name's fills start at the content layer's edge, not at its text inset.
-                let sorted = tb.sort == *c;
-                let fx0 = if i == 0 { x0 - PAD } else { x0 };
-                if sorted {
-                    t.FillRectangle(&rect(fx0, TOP, x1, size.height), &b.band);
-                }
-                if sorted || f.hot == Hot::Header(*c) {
-                    t.FillRectangle(&rect(fx0, TOP, x1, TOP + HEAD), if sorted && f.hot == Hot::Header(*c) { selected } else { hover });
-                }
-                if i > 0 {
-                    t.FillRectangle(&rect(x0, TOP + 8.0, x0 + 1.0, TOP + HEAD - 8.0), line);
-                }
-                let (l, r) = (x0 + 8.0, x1 - 8.0);
-                self.text(&t, &value, HEAD_VALUE, rect(l, TOP + 10.0, r, TOP + 32.0), if sorted { text } else { dim_b });
-                let fmt = if *c == Col::Name { HEAD_LABEL_LEFT } else { HEAD_LABEL };
-                self.text(&t, label, fmt, rect(l, TOP + 32.0, r, TOP + HEAD - 4.0), if sorted { text } else { dim_b });
-                if sorted {
-                    let g = if tb.desc { "\u{E70D}" } else { "\u{E70E}" };
-                    let cx = (x0 + x1) / 2.0;
-                    self.text(&t, g, GLYPH, rect(cx - 8.0, TOP, cx + 8.0, TOP + 12.0), dim_b);
-                }
-            }
-            t.FillRectangle(&rect(cols[0].0, TOP + HEAD - 1.0, size.width - PAD, TOP + HEAD), line);
-
-            // Rows.
-            let top = TOP + HEAD;
-            if tb.rows.is_empty() && !tb.filter.is_empty() {
-                self.text(&t, &format!("No process matches \u{201C}{}\u{201D}", tb.filter), NAME, rect(cols[0].0 + 8.0, top + 8.0, size.width - PAD, top + 8.0 + ROW), dim_b);
-            }
-            t.PushAxisAlignedClip(&rect(0.0, top, size.width, size.height), D2D1_ANTIALIAS_MODE_ALIASED);
-            let sel = tb.selected_index();
-            let (name_x0, name_x1) = cols[0];
-            for (i, row) in tb.rows.iter().enumerate().skip(tb.scroll).take(rows_visible(size.height) + 1) {
-                let y = top + (i - tb.scroll) as f32 * ROW;
-                let band = D2D1_ROUNDED_RECT { rect: rect(name_x0 - 4.0, y + 1.0, size.width - PAD - BAR + 4.0, y + ROW - 1.0), radiusX: 4.0, radiusY: 4.0 };
-                if sel == Some(i) {
-                    t.FillRoundedRectangle(&band, selected);
-                    let pill = D2D1_ROUNDED_RECT { rect: rect(name_x0 - 4.0, y + 8.0, name_x0 - 1.0, y + ROW - 8.0), radiusX: 1.5, radiusY: 1.5 };
-                    t.FillRoundedRectangle(&pill, accent);
-                } else if tb.hover == Some(i) {
-                    t.FillRoundedRectangle(&band, hover);
-                }
-                let is_section = matches!(row.key, Key::Section(_));
-                let mut x = chevron_x(row, name_x0);
-                if row.expandable {
-                    let g = if row.expanded { "\u{E70D}" } else { "\u{E76C}" };
-                    self.text(&t, g, GLYPH, rect(x, y, x + 16.0, y + ROW), dim_b);
-                }
-                x += 20.0;
-                if is_section {
-                    self.text(&t, &format!("{} {}", row.label, row.detail), SECTION, rect(x, y, name_x1 - 8.0, y + ROW), text);
-                    continue;
-                }
-                let path = row.rep.map(|p| tb.procs[p].path.as_str()).unwrap_or("");
-                match (!path.is_empty()).then(|| self.bitmap(&t, path, f.icons)).flatten() {
-                    Some(b) => t.DrawBitmap(&b, Some(&rect(x, y + 6.0, x + 16.0, y + 22.0)), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None),
-                    None => t.DrawRoundedRectangle(
-                        &D2D1_ROUNDED_RECT { rect: rect(x + 2.5, y + 8.5, x + 13.5, y + 19.5), radiusX: 2.0, radiusY: 2.0 },
-                        line,
-                        1.0,
-                        None,
-                    ),
-                }
-                x += 24.0;
-                // Label, then the detail (window title or member count) dimmed.
-                let s = if row.detail.is_empty() { row.label.clone() } else { format!("{}  {}", row.label, row.detail) };
-                let start = row.label.encode_utf16().count() as u32;
-                self.text_dim(&t, &s, NAME, rect(x, y, name_x1 - 8.0, y + ROW), text, Some((start, dim_b)));
-                let v = &row.v;
-                let cells = [
-                    pct(v.cpu),
-                    bytes(v.ram),
-                    pct(v.gpu),
-                    bytes(v.vram),
-                    match (mbs(v.read), mbs(v.write)) {
-                        (r, w) if r == "0" && w == "0" => "0 MB/s".into(),
-                        (r, w) => format!("{r} / {w} MB/s"),
-                    },
-                    row.pid.map(|p| p.to_string()).unwrap_or_default(),
-                ];
-                for (s, &(x0, x1)) in cells.iter().zip(&cols[1..]) {
-                    self.text(&t, s, NUM, rect(x0 + 8.0, y, x1 - 8.0, y + ROW), text);
-                }
-            }
-            if let Some((y0, y1)) = thumb(size.height, tb.rows.len(), tb.scroll) {
-                let x = size.width - BAR / 2.0;
-                let r = D2D1_ROUNDED_RECT { rect: rect(x - 1.5, y0 + 2.0, x + 1.5, y1 - 2.0), radiusX: 1.5, radiusY: 1.5 };
-                t.FillRoundedRectangle(&r, dim_b);
-            }
-            t.PopAxisAlignedClip();
-
         }
+        self.chrome(&t, size, f, &b);
+        if f.performance {
+            self.performance(&t, size, f, &b)?;
+            return self.present(&t);
+        }
+
+        // Column headers: sort arrow on top, then the machine total, then the name.
+        let cols = f.cols;
+        unsafe { t.PushAxisAlignedClip(&rect(f.nav_w + 1.0, TOP, size.width, size.height), D2D1_ANTIALIAS_MODE_ALIASED) };
+        if let Some(&(c, x0, x1)) = cols.iter().find(|c| c.0 == tb.sort && Some(c.0) != f.dragging) {
+            let fx0 = if c == Col::Name { x0 - PAD } else { x0 };
+            unsafe { t.FillRectangle(&rect(fx0, TOP, x1, size.height), &b.band) };
+        }
+        for (k, &(c, x0, x1)) in cols.iter().enumerate() {
+            if Some(c) != f.dragging {
+                self.header(&t, f, &b, k, c, x0, x1);
+            }
+        }
+        let (name_x0, name_x1) = (cols[0].1, cols[0].2);
+        unsafe { t.FillRectangle(&rect(name_x0, TOP + HEAD - 1.0, size.width - PAD, TOP + HEAD), &b.line) };
+
+        // Rows.
+        let top = TOP + HEAD;
+        if tb.rows.is_empty() && !tb.filter.is_empty() {
+            self.text(&t, &format!("No process matches \u{201C}{}\u{201D}", tb.filter), NAME, rect(name_x0 + 8.0, top + 8.0, size.width - PAD, top + 8.0 + ROW), &b.dim);
+        }
+        unsafe { t.PushAxisAlignedClip(&rect(0.0, top, size.width, size.height), D2D1_ANTIALIAS_MODE_ALIASED) };
+        let cursor = tb.selected_index();
+        let first = tb.scroll.floor().max(0.0) as usize;
+        let row_y = |i: usize| top + (i as f32 - tb.scroll) * ROW;
+        let shown = rows_visible(size.height) + 2;
+        for (i, row) in tb.rows.iter().enumerate().skip(first).take(shown) {
+            let y = row_y(i);
+            let band = rounded(name_x0 - 4.0, y + 1.0, size.width - PAD - BAR + 4.0, y + ROW - 1.0, 4.0);
+            unsafe {
+                if tb.marked.contains(&row.key) {
+                    t.FillRoundedRectangle(&band, &b.selected);
+                    t.FillRoundedRectangle(&rounded(name_x0 - 4.0, y + 8.0, name_x0 - 1.0, y + ROW - 8.0, 1.5), &b.accent);
+                } else if tb.hover == Some(i) {
+                    t.FillRoundedRectangle(&band, &b.hover);
+                }
+            }
+            if cursor == Some(i) && self.ring_on(f, Focus::Rows) {
+                self.ring(&t, band.rect, 4.0, &b);
+            }
+            let mut x = chevron_x(row, name_x0);
+            if row.expandable {
+                let g = if row.expanded { "\u{E70D}" } else { "\u{E76C}" };
+                self.text(&t, g, GLYPH, rect(x, y, x + 16.0, y + ROW), &b.dim);
+            }
+            x += 20.0;
+            if matches!(row.key, Key::Section(_)) {
+                self.text(&t, &format!("{} {}", row.label, row.detail), SECTION, rect(x, y, name_x1 - 8.0, y + ROW), &b.text);
+                continue;
+            }
+            let path = row.rep.map(|p| tb.procs[p].path.as_str()).unwrap_or("");
+            match (!path.is_empty()).then(|| self.bitmap(&t, path, f.icons.get(path).map(|i| &**i))).flatten() {
+                Some(bm) => unsafe { t.DrawBitmap(&bm, Some(&rect(x, y + 6.0, x + 16.0, y + 22.0)), 1.0, D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC, None, None) },
+                None => unsafe { t.DrawRoundedRectangle(&rounded(x + 2.5, y + 8.5, x + 13.5, y + 19.5, 2.0), &b.line, 1.0, None) },
+            }
+            x += 24.0;
+            // Label, then the detail (window title or member count) dimmed.
+            let s = if row.detail.is_empty() { row.label.clone() } else { format!("{}  {}", row.label, row.detail) };
+            let start = row.label.encode_utf16().count() as u32;
+            self.text_dim(&t, &s, NAME, rect(x, y, name_x1 - 8.0, y + ROW), &b.text, Some((start, &b.dim)));
+            for &(c, x0, x1) in &cols[1..] {
+                if Some(c) != f.dragging {
+                    self.text(&t, &cell(row, c), NUM, rect(x0 + 8.0, y, x1 - 8.0, y + ROW), &b.text);
+                }
+            }
+        }
+        unsafe { t.PopAxisAlignedClip() };
+
+        // The dragged column, lifted over the others: header and cells follow the mouse.
+        if let Some(k) = cols.iter().position(|col| Some(col.0) == f.dragging) {
+            let (c, x0, x1) = cols[k];
+            unsafe {
+                t.FillRoundedRectangle(&rounded(x0 - 3.0, TOP + 3.0, x1 + 5.0, size.height + 8.0, 7.0), &b.shadow);
+                t.FillRoundedRectangle(&rounded(x0, TOP, x1, size.height + 8.0, 6.0), &b.lifted);
+                t.DrawRoundedRectangle(&rounded(x0 + 0.5, TOP + 0.5, x1 - 0.5, size.height + 8.0, 6.0), &b.line, 1.0, None);
+            }
+            self.header(&t, f, &b, k, c, x0, x1);
+            unsafe { t.PushAxisAlignedClip(&rect(x0, top, x1, size.height), D2D1_ANTIALIAS_MODE_ALIASED) };
+            for (i, row) in tb.rows.iter().enumerate().skip(first).take(shown) {
+                if !matches!(row.key, Key::Section(_)) {
+                    self.text(&t, &cell(row, c), NUM, rect(x0 + 8.0, row_y(i), x1 - 8.0, row_y(i) + ROW), &b.text);
+                }
+            }
+            unsafe { t.PopAxisAlignedClip() };
+        }
+
+        if let Some((y0, y1)) = thumb(size.height, tb.rows.len(), tb.scroll) {
+            let x = size.width - BAR / 2.0;
+            unsafe { t.FillRoundedRectangle(&rounded(x - 1.5, y0 + 2.0, x + 1.5, y1 - 2.0, 1.5), &b.dim) };
+        }
+        unsafe { t.PopAxisAlignedClip() };
         self.present(&t)
+    }
+
+    /// Writes the drawn back buffer to a 32-bit BMP: the test harness reads the frame from the app,
+    /// so it needs no screen capture and the window can stay off screen and in the background.
+    fn save_frame(&self, path: &str) -> Result<()> {
+        let sc = &self.target.as_ref().unwrap().swapchain;
+        unsafe {
+            let tex: ID3D11Texture2D = sc.GetBuffer(0)?;
+            let device: ID3D11Device = sc.GetDevice()?;
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            tex.GetDesc(&mut desc);
+            (desc.Usage, desc.BindFlags, desc.CPUAccessFlags, desc.MiscFlags) = (D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ.0 as u32, 0);
+            let mut staging = None;
+            device.CreateTexture2D(&desc, None, Some(&mut staging))?;
+            let staging = staging.unwrap();
+            let ctx = device.GetImmediateContext()?;
+            ctx.CopyResource(&staging, &tex);
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            ctx.Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
+            let (w, h) = (desc.Width as usize, desc.Height as usize);
+            let mut out = Vec::with_capacity(54 + w * h * 4);
+            let le = |v: u32| v.to_le_bytes();
+            out.extend(b"BM");
+            out.extend(le((54 + w * h * 4) as u32));
+            out.extend(le(0));
+            out.extend(le(54));
+            out.extend(le(40));
+            out.extend(le(w as u32));
+            out.extend(le((-(h as i32)) as u32)); // top-down
+            out.extend([1, 0, 32, 0]);
+            out.extend([0u8; 24]);
+            for y in 0..h {
+                let row = std::slice::from_raw_parts((m.pData as *const u8).add(y * m.RowPitch as usize), w * 4);
+                out.extend(row);
+            }
+            ctx.Unmap(&staging, 0);
+            let _ = std::fs::write(path, out);
+        }
+        Ok(())
     }
 
     fn present(&mut self, t: &ID2D1DeviceContext) -> Result<()> {
@@ -834,6 +1151,9 @@ impl Renderer {
         let at = std::time::Instant::now();
         let drawn = unsafe { t.EndDraw(None, None) };
         crate::trace::record("enddraw", at, 0);
+        if let Some(path) = self.snap.take() {
+            let _ = self.save_frame(&path);
+        }
         let at = std::time::Instant::now();
         let presented = drawn.and_then(|_| unsafe { self.target.as_ref().unwrap().swapchain.Present(1, DXGI_PRESENT(0)).ok() });
         crate::trace::record("present", at, 0);
@@ -846,17 +1166,34 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests {
+    use crate::table::{Col, NUMS};
+
     #[test]
     fn resize_moves_one_separator() {
         let w = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0];
         // CPU|Memory 20 right: CPU wider, Memory narrower, the rest still.
-        assert_eq!(super::resize(w, 1, 20.0, 400.0), [92.0, 76.0, 64.0, 96.0, 128.0, 64.0]);
+        assert_eq!(super::resize(w, Some(0), 1, 20.0, 400.0), [92.0, 76.0, 64.0, 96.0, 128.0, 64.0]);
         // Too far: Memory stops at the minimum.
-        assert_eq!(super::resize(w, 1, 500.0, 400.0)[..2], [136.0, 32.0]);
+        assert_eq!(super::resize(w, Some(0), 1, 500.0, 400.0)[..2], [128.0, 40.0]);
         // Name|CPU 30 left: CPU wider (Name gives the space), never Name under 120.
-        assert_eq!(super::resize(w, 0, -30.0, 400.0)[0], 102.0);
-        assert_eq!(super::resize(w, 0, -1000.0, 400.0)[0], 352.0);
-        assert_eq!(super::resize(w, 0, 1000.0, 400.0)[0], 32.0);
+        assert_eq!(super::resize(w, None, 0, -30.0, 400.0)[0], 102.0);
+        assert_eq!(super::resize(w, None, 0, -1000.0, 400.0)[0], 352.0);
+        assert_eq!(super::resize(w, None, 0, 1000.0, 400.0)[0], 40.0);
+    }
+
+    #[test]
+    fn columns_follow_order_and_visibility() {
+        let w = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0];
+        let mut order = NUMS;
+        order.swap(0, 5); // PID first, CPU last
+        let mut hidden = [false; 6];
+        hidden[2] = true; // GPU
+        let c = super::columns(48.0, 1000.0, &w, &order, &hidden);
+        let names: Vec<Col> = c.iter().map(|c| c.0).collect();
+        assert_eq!(names, [Col::Name, Col::Pid, Col::Ram, Col::Vram, Col::Disk, Col::Cpu]);
+        assert_eq!(c.last().unwrap().2, 1000.0 - super::PAD - super::BAR, "anchored right");
+        assert!(c.windows(2).all(|p| p[0].2 == p[1].1), "no gaps");
+        assert_eq!(c[0].1, 48.0 + super::PAD);
     }
 
     #[test]
@@ -866,5 +1203,7 @@ mod tests {
         assert_eq!(super::nice(1.2e6), 2e6);
         assert_eq!(super::nice(3e6), 5e6);
         assert_eq!(super::nice(7e6), 1e7);
+        assert_eq!(super::grid(24, 1100.0, 140.0, 1.6), 12, "24 cores in a wide strip: two rows of 12");
+        assert_eq!(super::grid(1, 100.0, 100.0, 1.6), 1);
     }
 }

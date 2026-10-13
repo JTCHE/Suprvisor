@@ -49,6 +49,8 @@ pub struct Proc {
 pub struct System {
     /// 0-100, all logical CPUs.
     pub cpu: f32,
+    /// 0-100 per logical processor.
+    pub cores: Vec<f32>,
     pub ram_used: u64,
     pub ram_total: u64,
     /// Busiest GPU engine summed over all processes, 0-100.
@@ -169,6 +171,7 @@ impl Collector {
         let io = self.io.collect();
         System {
             cpu: self.cpu_times.cpu(),
+            cores: self.cpu_times.cores(self.cpus),
             ram_used,
             ram_total,
             gpu,
@@ -356,6 +359,8 @@ mod tests {
         assert_eq!(pids.len(), all.len(), "pids unique");
         assert!(all.iter().all(|p| (0.0..=100.0).contains(&p.cpu) && (0.0..=100.0).contains(&p.gpu)));
         assert!((0.0..=100.0).contains(&s.cpu));
+        assert_eq!(s.cores.len(), system::logical_cpus() as usize, "one value per logical processor");
+        assert!(s.cores.iter().all(|c| (0.0..=100.0).contains(c)));
         assert!(s.ram_used > 0 && s.ram_used < s.ram_total);
         assert!(s.vram_total > 0 && s.vram_used <= s.vram_total);
         assert!(all.iter().map(|p| p.private_ws).sum::<u64>() <= s.ram_total);
