@@ -66,6 +66,7 @@ pub enum Hot {
     SearchClear,
     Command(usize),
     Caption(usize),
+    GraphMode(usize),
 }
 
 /// Where the keyboard is. Tab and Shift+Tab go through these in order.
@@ -76,12 +77,13 @@ pub enum Focus {
     Command(usize),
     Header(usize), // index in the shown columns
     Rows,
+    GraphMode,
 }
 
 pub struct Renderer {
     factory: ID2D1Factory1,
     dwrite: IDWriteFactory,
-    formats: [IDWriteTextFormat; 11], // indexed by NAME, SECTION, ...
+    formats: [IDWriteTextFormat; 10], // indexed by NAME, SECTION, ...
     // Text layouts of this frame and the previous one. Shaping text is most of the paint time,
     // and most cells show the same text as one frame ago.
     layouts: HashMap<LayoutKey, IDWriteTextLayout>,
@@ -94,6 +96,8 @@ pub struct Renderer {
     search_layout: Option<(String, IDWriteTextLayout)>,
     /// The caller already waited on `waitable()`: the frame slot is taken.
     pub ready: bool,
+    /// The page header buttons of the last frame, for hit tests.
+    pub commands: Vec<(usize, D2D_RECT_F)>,
     /// Test instances (SUPRVISOR_TEST): write the next frame to this BMP file.
     pub snap: Option<String>,
     started: std::time::Instant, // this paint, for the trace
@@ -121,6 +125,10 @@ pub struct Frame<'a> {
     pub can_end: bool, // a process or group is selected
     pub ending: usize, // selected rows End task acts on, for the button label
     pub maximized: bool,
+    /// The CPU card shows one graph per logical processor.
+    pub cores: bool,
+    /// The navigation item whose tooltip shows.
+    pub tooltip: Option<usize>,
 }
 
 fn pixel_format() -> D2D1_PIXEL_FORMAT {
@@ -211,6 +219,9 @@ impl Renderer {
             self.performance(&t, size, f, &b)?;
         } else {
             self.table(&t, size, f, &b);
+        }
+        if let Some(k) = f.tooltip {
+            self.tooltip(&t, size.height, k, f, &b);
         }
         self.present(&t)
     }

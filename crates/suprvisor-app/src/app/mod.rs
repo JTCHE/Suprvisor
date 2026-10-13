@@ -28,6 +28,7 @@ pub use window::run;
 const TIMER_SAVE: usize = 1;
 const TIMER_CARET: usize = 2;
 const TIMER_SHOW: usize = 3;
+const TIMER_TOOLTIP: usize = 4;
 /// The caret stops blinking after this long without input, like Windows' own text boxes can; each
 /// blink is a repaint.
 const CARET_BLINK_FOR: Duration = Duration::from_secs(10);
@@ -40,7 +41,7 @@ enum Drag {
     Reorder(Col, f32),
     /// A separator: the columns on its two sides trade width. Mouse x, widths and Name width at
     /// the start.
-    Column { left: Option<usize>, right: usize, x: f32, start: [f32; 6], name: f32 },
+    Column { left: Option<usize>, right: usize, x: f32, start: [f32; 6], name: f32, fit: [f32; 6] },
     Thumb(f32), // mouse y minus the thumb top
     /// Pressed on a row at this y: a move selects the rows it passes.
     Row(usize, f32),
@@ -85,6 +86,7 @@ struct App {
     pending_show: Option<bool>, // show asked before the first data: shows when it comes (or soon)
     maximize_on_show: bool,     // the window was maximized when it last closed
     shown: bool,
+    tooltip: Option<usize>, // navigation item whose tooltip shows
 }
 
 fn app<'a>(hwnd: HWND) -> Option<&'a mut App> {
@@ -151,6 +153,7 @@ impl App {
             pending_show: None,
             maximize_on_show: false,
             shown: false,
+            tooltip: None,
         })
     }
 
@@ -218,6 +221,11 @@ impl App {
         if hot != self.hot {
             self.hot = hot;
             self.dirty = true;
+            // An item of the closed navigation pane shows its name after a short hover.
+            self.tooltip = None;
+            if matches!(hot, Hot::Nav(k) if k > 0) && !self.nav_open {
+                unsafe { SetTimer(Some(self.hwnd), TIMER_TOOLTIP, 500, None) };
+            }
         }
     }
 

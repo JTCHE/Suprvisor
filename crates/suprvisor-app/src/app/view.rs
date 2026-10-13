@@ -19,6 +19,7 @@ pub(super) enum Hit {
     Search,
     SearchClear,
     Command(usize), // 0 Run new task, 1 End task
+    GraphMode(usize), // the CPU card switch: 0 overall, 1 per core
     Caption(usize), // 0 minimize, 1 maximize, 2 close
     Title,          // empty title bar: drags the window
 }
@@ -73,13 +74,19 @@ impl App {
             return Hit::None;
         }
         if y < TOP {
-            return render::commands(w, self.performance)
-                .into_iter()
+            return self
+                .renderer
+                .commands
+                .iter()
                 .find(|(_, r)| (r.left..r.right).contains(&x) && (r.top..r.bottom).contains(&y))
-                .map_or(Hit::None, |(k, _)| Hit::Command(k));
+                .map_or(Hit::None, |&(k, _)| Hit::Command(k));
         }
         if self.performance {
-            return Hit::None;
+            let card = render::cards(self.nav_w, w, h)[0];
+            return render::graph_modes(card)
+                .iter()
+                .position(|r| (r.left..r.right).contains(&x) && (r.top..r.bottom).contains(&y))
+                .map_or(Hit::None, Hit::GraphMode);
         }
         let rows_top = TOP + HEAD;
         if x >= w - BAR && y >= rows_top {
@@ -205,6 +212,8 @@ impl App {
             can_end: marked > 0,
             ending: marked,
             maximized: unsafe { IsZoomed(self.hwnd) }.as_bool(),
+            cores: self.settings.cores,
+            tooltip: self.tooltip,
         };
         let _ = self.renderer.paint(self.hwnd, dpi(self.hwnd), &self.theme, &frame);
         self.dirty |= moving;
@@ -222,18 +231,29 @@ impl App {
         }
     }
 
+    /// The CPU card graph: one per logical processor, or overall.
+    pub(super) fn set_graph_mode(&mut self, cores: bool) {
+        self.settings.cores = cores;
+        self.dirty = true;
+        self.save_later();
+    }
+
     /// Fits a column's width to its widest cell (double-click on its right separator).
     pub(super) fn autofit(&mut self, c: Col) {
         let Some(n) = c.num() else { return };
-        let mut w = self.renderer.measure(&render::total(&self.snap.system, c), true).max(self.renderer.measure(c.label(), false));
-        for row in &self.table.rows {
-            if !matches!(row.key, Key::Section(_)) {
-                w = w.max(self.renderer.measure(&render::cell(row, c), false));
-            }
-        }
-        let w = (w + 20.0).ceil().clamp(render::MIN_WIDTH, 600.0);
+        let w = self.fit_width(c);
         self.relayout(|a| a.settings.widths[n] = w);
         self.save_later();
+    }
+
+    /// Width that shows a column's widest cell, total and label in full.
+    pub(super) fn fit_width(&mut self, c: Col) -> f32 {
+        let cells: HashSet<String> = self.table.rows.iter().filter(|r| !matches!(r.key, Key::Section(_))).map(|r| render::cell(r, c)).collect();
+        let mut w = self.renderer.measure(&render::total(&self.snap.system, c), true).max(self.renderer.measure(c.label(), false));
+        for s in &cells {
+            w = w.max(self.renderer.measure(s, false));
+        }
+        (w + 20.0).ceil().clamp(render::MIN_WIDTH, 600.0)
     }
 
     /// While a column is dragged: it swaps places with a neighbor once its middle passes the

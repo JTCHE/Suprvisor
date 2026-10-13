@@ -132,6 +132,15 @@ fn on_timer(a: &mut App, hwnd: HWND, wp: WPARAM) {
             a.dirty = true;
             a.paint_in_modal();
         }
+        TIMER_TOOLTIP => {
+            let _ = unsafe { KillTimer(Some(hwnd), TIMER_TOOLTIP) };
+            if let Hot::Nav(k) = a.hot
+                && !a.nav_open
+            {
+                a.tooltip = Some(k);
+                a.dirty = true;
+            }
+        }
         TIMER_SHOW => {
             let _ = unsafe { KillTimer(Some(hwnd), TIMER_SHOW) };
             if let Some(activate) = a.pending_show.take() {
@@ -226,13 +235,14 @@ fn mouse_message(a: &mut App, _hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             a.mouse_move(x, y);
             LRESULT(0)
         }
-        WM_MOUSELEAVE => {
+        // Test instances get posted moves while the real cursor is elsewhere: no leave.
+        WM_MOUSELEAVE if !test() => {
             if matches!(a.drag, Drag::Header(..) | Drag::Row(..)) {
                 a.drag = Drag::None; // pressed without capture: the release will not come here
             }
             a.mouse = None;
             a.table.hover = None;
-            a.hot = Hot::None;
+            a.set_hot(Hot::None);
             a.dirty = true;
             LRESULT(0)
         }

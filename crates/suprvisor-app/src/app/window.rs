@@ -164,6 +164,9 @@ impl App {
         if performance && matches!(self.focus, Some(Focus::Header(_) | Focus::Rows | Focus::Command(1))) {
             self.focus = Some(Focus::Nav(2));
         }
+        if !performance && self.focus == Some(Focus::GraphMode) {
+            self.focus = Some(Focus::Nav(1));
+        }
         if performance {
             self.dirty = true;
         } else {

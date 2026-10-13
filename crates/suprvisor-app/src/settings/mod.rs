@@ -12,6 +12,8 @@ pub struct Settings {
     pub performance: bool,
     /// The navigation pane shows labels (else icons only).
     pub nav: bool,
+    /// The CPU card shows one graph per logical processor (else the overall graph).
+    pub cores: bool,
     /// Widths in DIPs of the columns after Name (CPU, RAM, GPU, VRAM, Disk, PID). Name takes the rest.
     pub widths: [f32; 6],
     /// Display order of the columns after Name (Name stays first).
@@ -24,7 +26,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { sort: Col::Name, desc: false, grouped: true, performance: false, nav: false, widths: DEFAULT_WIDTHS, order: NUMS, hidden: [false; 6], window: None }
+        Self { sort: Col::Name, desc: false, grouped: true, performance: false, nav: false, cores: false, widths: DEFAULT_WIDTHS, order: NUMS, hidden: [false; 6], window: None }
     }
 }
 
@@ -51,6 +53,7 @@ impl Settings {
                 "grouped" => s.grouped = v.trim() != "0",
                 "tab" => s.performance = v.trim() == "performance",
                 "nav" => s.nav = v.trim() == "open",
+                "cpu" => s.cores = v.trim() == "cores",
                 "columns" => s.widths = nums(v).unwrap_or(s.widths).map(|w: f32| w.clamp(32.0, 600.0)),
                 "order" => {
                     let o: Vec<Col> = v.split(',').filter_map(|c| Col::from_id(c.trim())).filter(|c| c.num().is_some()).collect();
@@ -81,10 +84,11 @@ impl Settings {
         let order = self.order.map(|c| c.id()).join(",");
         let hidden: Vec<&str> = NUMS.iter().zip(self.hidden).filter(|(_, h)| *h).map(|(c, _)| c.id()).collect();
         let mut text = format!(
-            "sort={}\ndesc={}\ngrouped={}\ntab={tab}\nnav={nav}\ncolumns={w}\norder={order}\nhidden={}\n",
+            "sort={}\ndesc={}\ngrouped={}\ntab={tab}\nnav={nav}\ncpu={}\ncolumns={w}\norder={order}\nhidden={}\n",
             self.sort.id(),
             self.desc as u8,
             self.grouped as u8,
+            if self.cores { "cores" } else { "overall" },
             hidden.join(",")
         );
         if let Some(([l, t, r, b], max)) = self.window {

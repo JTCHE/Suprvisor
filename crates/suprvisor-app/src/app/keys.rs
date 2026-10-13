@@ -103,7 +103,9 @@ impl App {
     /// arrow keys move inside them.
     pub(super) fn tab_stops(&self) -> Vec<Focus> {
         let mut v = vec![Focus::Search, Focus::Nav(if self.performance { 2 } else { 1 }), Focus::Command(0)];
-        if !self.performance {
+        if self.performance {
+            v.push(Focus::GraphMode);
+        } else {
             if !self.end_rows().is_empty() {
                 v.push(Focus::Command(1));
             }
@@ -178,13 +180,18 @@ impl App {
             },
             Some(Focus::Command(k)) => match vk {
                 VK_LEFT | VK_RIGHT => {
-                    let n = render::commands(0.0, self.performance).len();
+                    let n = self.renderer.commands.len().max(1);
                     let k = if vk == VK_LEFT { k.saturating_sub(1) } else { (k + 1).min(n - 1) };
                     if k == 0 || !self.end_rows().is_empty() {
                         self.set_focus(Some(Focus::Command(k)), true);
                     }
                 }
                 _ if activate => self.activate_command(k),
+                _ => return false,
+            },
+            Some(Focus::GraphMode) => match vk {
+                VK_LEFT | VK_RIGHT => self.set_graph_mode(vk == VK_RIGHT),
+                _ if activate => self.set_graph_mode(!self.settings.cores),
                 _ => return false,
             },
             Some(Focus::Header(k)) => {

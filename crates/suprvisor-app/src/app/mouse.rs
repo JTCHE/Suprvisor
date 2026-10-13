@@ -13,6 +13,7 @@ impl App {
     pub(super) fn mouse_down(&mut self, x: f32, y: f32, double: bool) {
         let hit = self.hit(x, y);
         let (ctrl, shift) = (ctrl(), shift());
+        self.tooltip = None;
         match hit {
             Hit::Search => {}
             Hit::Header(_) | Hit::Edge(_) | Hit::Row(..) => self.set_focus(Some(if matches!(hit, Hit::Row(..)) { Focus::Rows } else { Focus::Header(0) }), false),
@@ -25,12 +26,7 @@ impl App {
                 let cols = self.layout_cols();
                 self.autofit(if k == 1 { cols[1].0 } else { cols[k - 1].0 });
             }
-            Hit::Edge(k) => {
-                let cols = self.layout_cols();
-                let (left, right) = (cols[k - 1].0.num(), cols[k].0.num().unwrap());
-                self.drag = Drag::Column { left, right, x, start: self.settings.widths, name: cols[0].2 - cols[0].1 };
-                unsafe { SetCapture(self.hwnd) };
-            }
+            Hit::Edge(k) => self.press_edge(k, x),
             // No capture for a header press: a click is the common case, and SetCapture and
             // ReleaseCapture go into the window manager, which can make the thread wait when
             // other processes hold it. A release outside the window does not sort.
@@ -48,6 +44,7 @@ impl App {
                 }
             }
             Hit::Nav(k) => self.activate_nav(k),
+            Hit::GraphMode(k) => self.set_graph_mode(k == 1),
             Hit::Command(k) if k == 0 || !self.end_rows().is_empty() => self.activate_command(k),
             Hit::SearchClear => {
                 self.edit.clear();
@@ -77,6 +74,21 @@ impl App {
         self.caret_input();
     }
 
+    /// A press on the separator left of shown column `k`: starts a resize.
+    fn press_edge(&mut self, k: usize, x: f32) {
+        let cols = self.layout_cols();
+        let (left, right) = (cols[k - 1].0.num(), cols[k].0.num().unwrap());
+        // Content widths of the two columns beside the separator: the floor they shrink to.
+        let mut fit = [render::MIN_WIDTH; 6];
+        for c in [cols[k - 1].0, cols[k].0] {
+            if let Some(i) = c.num() {
+                fit[i] = self.fit_width(c);
+            }
+        }
+        self.drag = Drag::Column { left, right, x, start: self.settings.widths, name: cols[0].2 - cols[0].1, fit };
+        unsafe { SetCapture(self.hwnd) };
+    }
+
     /// A press on row `i`; `toggle`: on its chevron, or a double-click.
     fn press_row(&mut self, i: usize, y: f32, toggle: bool, ctrl: bool, shift: bool) {
         if toggle {
@@ -98,8 +110,8 @@ impl App {
     pub(super) fn mouse_move(&mut self, x: f32, y: f32) {
         self.mouse = Some((x, y));
         match self.drag {
-            Drag::Column { left, right, x: x0, start, name } => {
-                self.settings.widths = render::resize(start, left, right, x - x0, name);
+            Drag::Column { left, right, x: x0, start, name, fit } => {
+                self.settings.widths = render::resize(start, left, right, x - x0, name, fit);
                 self.dirty = true;
             }
             Drag::Thumb(grab) => {
@@ -174,6 +186,7 @@ impl App {
             Hit::Search => Hot::Search,
             Hit::SearchClear => Hot::SearchClear,
             Hit::Command(k) => Hot::Command(k),
+            Hit::GraphMode(k) => Hot::GraphMode(k),
             _ => Hot::None,
         });
         let hover = match hit {

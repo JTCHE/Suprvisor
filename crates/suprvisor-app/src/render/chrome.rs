@@ -184,8 +184,8 @@ impl Renderer {
         let cl = f.nav_w;
         // Navigation pane. Labels show as it opens; the pill slides to the open page.
         unsafe { t.PushAxisAlignedClip(&rect(0.0, TITLE, cl, h), D2D1_ANTIALIAS_MODE_ALIASED) };
-        let items = [("\u{E700}", ""), ("\u{E71D}", "Processes"), ("\u{E9D9}", "Performance"), ("\u{E8A7}", "Windows Task Manager")];
-        for (k, (glyph, label)) in items.into_iter().enumerate() {
+        let glyphs = ["\u{E700}", "\u{E71D}", "\u{E9D9}", "\u{EE40}"];
+        for (k, (glyph, label)) in glyphs.into_iter().zip(NAV_LABELS).enumerate() {
             let (top, bot) = nav_row(k, h);
             let (l, r) = (4.0, cl - 4.0);
             let on = k > 0 && k < 3 && (k == 2) == f.performance;
@@ -211,6 +211,20 @@ impl Renderer {
         }
     }
 
+    /// A navigation item's name next to the closed pane, in the style of a Windows tooltip.
+    pub(super) fn tooltip(&mut self, t: &ID2D1DeviceContext, height: f32, k: usize, f: &Frame, b: &Brushes) {
+        let label = NAV_LABELS[k];
+        let (top, bot) = nav_row(k, height);
+        let (l, cy) = (f.nav_w + 6.0, (top + bot) / 2.0);
+        let r = rect(l, cy - 15.0, l + self.width(label, HEAD_LABEL_LEFT).ceil() + 18.0, cy + 15.0);
+        unsafe {
+            t.FillRoundedRectangle(&rounded(r.left - 1.0, r.top + 1.0, r.right + 1.0, r.bottom + 2.0, 5.0), &b.shadow);
+            t.FillRoundedRectangle(&rounded(r.left, r.top, r.right, r.bottom, 4.0), &b.lifted);
+            t.DrawRoundedRectangle(&rounded(r.left + 0.5, r.top + 0.5, r.right - 0.5, r.bottom - 0.5, 4.0), &b.line, 1.0, None);
+        }
+        self.text(t, label, HEAD_LABEL_LEFT, rect(r.left + 9.0, r.top, r.right, r.bottom), &b.text);
+    }
+
     /// Page title, process count, Run new task and End task.
     fn page_header(&mut self, t: &ID2D1DeviceContext, w: f32, f: &Frame, b: &Brushes) {
         let cl = f.nav_w;
@@ -219,19 +233,21 @@ impl Renderer {
         if !f.performance {
             self.text(t, &format!("{} processes", f.processes), NAME, rect(x + 96.0, TITLE, x + 260.0, TOP), &b.dim);
         }
-        for (k, r) in commands(w, f.performance) {
+        let mut buttons = vec![("\u{E768}", "Run new task".to_owned())];
+        if !f.performance {
+            buttons.push(("\u{E733}", if f.ending > 1 { format!("End {} tasks", f.ending) } else { "End task".to_owned() }));
+        }
+        let widths: Vec<f32> = buttons.iter().map(|(_, label)| self.width(label, NAME).ceil()).collect();
+        self.commands = commands(w, &widths);
+        for (k, r) in self.commands.clone() {
             let enabled = k == 0 || f.can_end;
             if enabled && f.hot == Hot::Command(k) {
                 unsafe { t.FillRoundedRectangle(&rounded(r.left, r.top, r.right, r.bottom, 4.0), &b.hover) };
             }
             let fg = if enabled { &b.text } else { &b.off };
-            let (glyph, label) = match k {
-                0 => ("\u{E768}", "Run new task".to_owned()),
-                _ if f.ending > 1 => ("\u{E733}", format!("End {} tasks", f.ending)),
-                _ => ("\u{E733}", "End task".to_owned()),
-            };
-            self.text(t, glyph, ICON, rect(r.left + 4.0, r.top, r.left + 32.0, r.bottom), fg);
-            self.text(t, &label, NAME, rect(r.left + 36.0, r.top, r.right - 4.0, r.bottom), fg);
+            let (glyph, label) = &buttons[k];
+            self.text(t, glyph, ICON, rect(r.left + COMMAND_PAD - 4.0, r.top, r.left + COMMAND_PAD + 20.0, r.bottom), fg);
+            self.text(t, label, NAME, rect(r.left + COMMAND_LABEL_X, r.top, r.right, r.bottom), fg);
             if self.ring_on(f, Focus::Command(k)) {
                 self.ring(t, r, 4.0, b);
             }

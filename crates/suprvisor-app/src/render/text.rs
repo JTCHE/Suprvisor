@@ -20,8 +20,7 @@ pub(super) const HEAD_LABEL_LEFT: usize = 5;
 pub(super) const GLYPH: usize = 6;
 pub(super) const ICON: usize = 7; // navigation and button icons
 pub(super) const SEARCH: usize = 8; // the search text: no trimming
-pub(super) const TINY: usize = 9; // core numbers on the CPU cores graphs
-pub(super) const TINY_VALUE: usize = 10;
+pub(super) const TINY_VALUE: usize = 9; // the load on each CPU core graph
 
 /// Format, box size in 1/4 DIPs, where the dimmed part starts, text.
 pub(super) type LayoutKey = (usize, u32, u32, u32, String);
@@ -126,7 +125,6 @@ impl Renderer {
                 format(&dwrite, w!("Segoe Fluent Icons"), 10.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
                 format(&dwrite, w!("Segoe Fluent Icons"), 16.0, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_ALIGNMENT_CENTER)?,
                 search,
-                format(&dwrite, text, 10.0, DWRITE_FONT_WEIGHT_NORMAL, lead)?,
                 format(&dwrite, text, 10.0, DWRITE_FONT_WEIGHT_SEMI_BOLD, trail)?,
             ],
             layouts: HashMap::new(),
@@ -139,6 +137,7 @@ impl Renderer {
             search_off: 0.0,
             search_layout: None,
             ready: false,
+            commands: Vec::new(),
             snap: None,
             started: std::time::Instant::now(),
         })
@@ -175,7 +174,11 @@ impl Renderer {
 
     /// Width of `s` as a cell (or a header total), for fitting a column to its content.
     pub fn measure(&mut self, s: &str, header: bool) -> f32 {
-        let f = if header { HEAD_VALUE } else { NUM };
+        self.width(s, if header { HEAD_VALUE } else { NUM })
+    }
+
+    /// Width of `s` in format `f`.
+    pub(super) fn width(&self, s: &str, f: usize) -> f32 {
         let Ok(l) = (unsafe { self.dwrite.CreateTextLayout(&utf16(s), &self.formats[f], 4000.0, 20.0) }) else { return 0.0 };
         let mut m = DWRITE_TEXT_METRICS::default();
         unsafe { l.GetMetrics(&mut m) }.map_or(0.0, |_| m.width)

@@ -66,10 +66,14 @@ fn graphs(s: &System, h: &VecDeque<System>) -> [Graph; 6] {
 }
 
 /// Columns for a grid of `n` cells in a `w` x `h` area: the count that gives the biggest cells
-/// with a width about `aspect` times their height.
+/// with a width about `aspect` times their height. A count that fills every row wins when its
+/// cells are at most 15% smaller.
 pub fn grid(n: usize, w: f32, h: f32, aspect: f32) -> usize {
+    let n = n.max(1);
     let size = |c: usize| (w / c as f32 / aspect).min(h / n.div_ceil(c) as f32);
-    (1..=n.max(1)).max_by(|&a, &b| size(a).total_cmp(&size(b))).unwrap_or(1)
+    let by_size = |&a: &usize, &b: &usize| size(a).total_cmp(&size(b));
+    let best = (1..=n).max_by(by_size).unwrap_or(1);
+    (1..=n).filter(|c| n % c == 0 && size(*c) >= 0.85 * size(best)).max_by(by_size).unwrap_or(best)
 }
 
 impl Renderer {
@@ -122,58 +126,73 @@ impl Renderer {
         Ok(())
     }
 
-    /// The Performance tab: a grid of 60 s graphs under the page header, and a row with one small
-    /// graph per logical processor.
+    /// The Performance tab: six cards with 60 s graphs. The CPU card shows the overall graph or
+    /// one small graph per logical processor.
     pub(super) fn performance(&mut self, t: &ID2D1DeviceContext, size: D2D_SIZE_F, f: &Frame, b: &Brushes) -> Result<()> {
-        const GAP: f32 = 12.0;
-        let (x0, y0, x1, y1) = (f.nav_w + PAD, TOP + PAD, size.width - PAD, size.height - PAD);
-        let cols = if x1 - x0 >= 900.0 { 3 } else if x1 - x0 >= 560.0 { 2 } else { 1 };
-        let rows = 6usize.div_ceil(cols) + 1;
-        let w = (x1 - x0 - GAP * (cols - 1) as f32) / cols as f32;
-        let h = (y1 - y0 - GAP * (rows - 1) as f32) / rows as f32;
-        let tile = |t: &ID2D1DeviceContext, l: f32, top: f32, r: f32| unsafe { t.FillRoundedRectangle(&rounded(l, top, r, top + h, 6.0), &b.hover) };
-        for (i, g) in graphs(f.system, f.history).iter().enumerate() {
-            let l = x0 + (i % cols) as f32 * (w + GAP);
-            let top = y0 + (i / cols) as f32 * (h + GAP);
-            let r = l + w;
-            tile(t, l, top, r);
+        let cards = cards(f.nav_w, size.width, size.height);
+        for (i, (g, c)) in graphs(f.system, f.history).iter().zip(&cards).enumerate() {
+            let (l, top, r) = (c.left, c.top, c.right);
+            unsafe { t.FillRoundedRectangle(&rounded(l, top, r, c.bottom, 6.0), &b.hover) };
             self.text(t, g.name, SECTION, rect(l + 12.0, top + 6.0, r - 12.0, top + 30.0), &b.text);
             self.text(t, &g.value, HEAD_VALUE, rect(l + 12.0, top + 6.0, r - 12.0, top + 30.0), &b.text);
             self.text(t, &g.detail, HEAD_LABEL_LEFT, rect(l + 12.0, top + 30.0, r - 12.0, top + 48.0), &b.dim);
-            let g_r = rect(l + 12.0, top + 54.0, r - 12.0, top + h - 12.0);
-            if g_r.bottom - g_r.top >= 8.0 {
-                self.plot(t, g_r, &g.series, g.max, b, true, 1.5)?;
+            let area = rect(l + 12.0, top + 58.0, r - 12.0, c.bottom - 12.0);
+            if area.bottom - area.top < 8.0 {
+                continue;
+            }
+            if i == 0 && f.cores {
+                self.cores(t, area, f, b)?;
+            } else {
+                self.plot(t, area, &g.series, g.max, b, true, 1.5)?;
             }
         }
+        self.graph_switch(t, cards[0], f, b);
+        Ok(())
+    }
 
-        // One graph per logical processor, across the last row.
-        let top = y0 + (rows - 1) as f32 * (h + GAP);
-        tile(t, x0, top, x1);
+    /// One small graph per logical processor, in a grid that fills `area`.
+    fn cores(&mut self, t: &ID2D1DeviceContext, area: D2D_RECT_F, f: &Frame, b: &Brushes) -> Result<()> {
+        const CELL_GAP: f32 = 4.0;
         let cores = &f.system.cores;
-        let busiest = cores.iter().copied().fold(0.0, f32::max);
-        self.text(t, "CPU cores", SECTION, rect(x0 + 12.0, top + 6.0, x1 - 12.0, top + 30.0), &b.text);
-        self.text(t, &format!("busiest {}", pct(busiest)), HEAD_VALUE, rect(x0 + 12.0, top + 6.0, x1 - 12.0, top + 30.0), &b.text);
-        let (gl, gt, gr, gb) = (x0 + 12.0, top + 36.0, x1 - 12.0, top + h - 12.0);
         let n = cores.len();
-        if n == 0 || gb - gt < 16.0 {
+        if n == 0 {
             return Ok(());
         }
-        const CELL_GAP: f32 = 6.0;
-        let c = grid(n, gr - gl, gb - gt, 1.6);
+        let (aw, ah) = (area.right - area.left, area.bottom - area.top);
+        let c = grid(n, aw, ah, 1.6);
         let r = n.div_ceil(c);
-        let cw = (gr - gl - CELL_GAP * (c - 1) as f32) / c as f32;
-        let ch = (gb - gt - CELL_GAP * (r - 1) as f32) / r as f32;
+        let cw = (aw - CELL_GAP * (c - 1) as f32) / c as f32;
+        let ch = (ah - CELL_GAP * (r - 1) as f32) / r as f32;
         for (k, v) in cores.iter().enumerate() {
-            let l = gl + (k % c) as f32 * (cw + CELL_GAP);
-            let tp = gt + (k / c) as f32 * (ch + CELL_GAP);
+            let l = area.left + (k % c) as f32 * (cw + CELL_GAP);
+            let tp = area.top + (k / c) as f32 * (ch + CELL_GAP);
             let series: Vec<f64> = f.history.iter().map(|s| s.cores.get(k).copied().unwrap_or(0.0) as f64).collect();
             self.plot(t, rect(l, tp, l + cw, tp + ch), &series, 100.0, b, false, 1.0)?;
-            if ch >= 22.0 && cw >= 40.0 {
-                self.text(t, &k.to_string(), TINY, rect(l + 4.0, tp + 1.0, l + cw - 4.0, tp + 14.0), &b.dim);
+            if ch >= 22.0 && cw >= 44.0 {
                 self.text(t, &format!("{v:.0}%"), TINY_VALUE, rect(l + 4.0, tp + 1.0, l + cw - 4.0, tp + 14.0), &b.dim);
             }
         }
         Ok(())
+    }
+
+    /// The Overall / Per core switch on the CPU card.
+    fn graph_switch(&mut self, t: &ID2D1DeviceContext, card: D2D_RECT_F, f: &Frame, b: &Brushes) {
+        let segs = graph_modes(card);
+        let all = rect(segs[0].left, segs[0].top, segs[1].right, segs[1].bottom);
+        unsafe { t.DrawRoundedRectangle(&rounded(all.left + 0.5, all.top + 0.5, all.right - 0.5, all.bottom - 0.5, 4.0), &b.line, 1.0, None) };
+        for (k, r) in segs.iter().enumerate() {
+            let on = (k == 1) == f.cores;
+            let fill = if on { Some(&b.selected) } else if f.hot == Hot::GraphMode(k) { Some(&b.hover) } else { None };
+            if let Some(fill) = fill {
+                unsafe { t.FillRoundedRectangle(&rounded(r.left + 2.0, r.top + 2.0, r.right - 2.0, r.bottom - 2.0, 3.0), fill) };
+            }
+            let label = GRAPH_MODES[k];
+            let inset = ((r.right - r.left - self.width(label, HEAD_LABEL_LEFT)) / 2.0).max(0.0);
+            self.text(t, label, HEAD_LABEL_LEFT, rect(r.left + inset, r.top, r.right, r.bottom), if on { &b.text } else { &b.dim });
+        }
+        if self.ring_on(f, Focus::GraphMode) {
+            self.ring(t, all, 4.0, b);
+        }
     }
 }
 
@@ -188,5 +207,6 @@ mod tests {
         assert_eq!(super::nice(7e6), 1e7);
         assert_eq!(super::grid(24, 1100.0, 140.0, 1.6), 12, "24 cores in a wide strip: two rows of 12");
         assert_eq!(super::grid(1, 100.0, 100.0, 1.6), 1);
+        assert_eq!(super::grid(24, 338.0, 200.0, 1.6), 6, "a CPU card: four full rows of 6, not five rows of 5");
     }
 }

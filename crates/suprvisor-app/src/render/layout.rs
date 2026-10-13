@@ -25,19 +25,28 @@ pub fn columns(x0: f32, width: f32, widths: &[f32; 6], order: &[Col; 6], hidden:
     out
 }
 
-/// Widths after dragging a separator by `d` DIPs, from `start`. Only that separator moves: the
-/// columns on its two sides (`left`, `right`, by `Col::num`; `left` None is Name) trade width.
-/// Name keeps at least NAME_MIN of its `name` width.
-pub fn resize(start: [f32; 6], left: Option<usize>, right: usize, d: f32, name: f32) -> [f32; 6] {
+/// Widths after dragging a separator by `d` DIPs from `start`, as in Task Manager. The column the
+/// separator moves into shrinks, but not under its content width `fit`. Past that, to the left,
+/// Name gives the space and the columns between slide; to the right, the separator stops.
+/// `left` and `right` are the columns beside it, by `Col::num`; `left` None is Name, which keeps
+/// at least NAME_MIN of its `name` width.
+pub fn resize(start: [f32; 6], left: Option<usize>, right: usize, d: f32, name: f32, fit: [f32; 6]) -> [f32; 6] {
     const NAME_MIN: f32 = 120.0;
+    // A column already narrower than its content does not jump to it.
+    let room = |i: usize| (start[i] - fit[i].min(start[i])).max(0.0);
     let mut w = start;
-    match left {
-        None => w[right] = (start[right] - d).clamp(MIN_WIDTH, start[right].max(MIN_WIDTH) + (name - NAME_MIN).max(0.0)),
-        Some(l) => {
-            let d = d.clamp(-(start[l] - MIN_WIDTH).max(0.0), (start[right] - MIN_WIDTH).max(0.0));
-            w[l] += d;
-            w[right] -= d;
+    if d >= 0.0 {
+        let d = d.min(room(right));
+        if let Some(l) = left {
+            w[l] += d; // else Name grows: it takes the rest
         }
+        w[right] -= d;
+    } else {
+        let shrink = left.map_or(0.0, |l| (-d).min(room(l)));
+        if let Some(l) = left {
+            w[l] -= shrink;
+        }
+        w[right] += shrink + (-d - shrink).min((name - NAME_MIN).max(0.0));
     }
     w
 }
@@ -64,11 +73,39 @@ pub fn caption_at(x: f32, y: f32, width: f32) -> Option<usize> {
 /// Navigation pane rows: 0 the menu button, 1 Processes, 2 Performance, 3 Windows Task Manager
 /// (at the bottom). Top and bottom of row `k` in a window `height` DIPs tall.
 pub fn nav_row(k: usize, height: f32) -> (f32, f32) {
-    let top = if k == 3 { (height - 4.0 - NAV_ROW).max(NAV_TOP + 3.0 * NAV_ROW) } else { NAV_TOP + k as f32 * NAV_ROW };
+    // The bottom item keeps the same 4 DIP inset from the bottom edge as from the left edge.
+    let top = if k == 3 { (height - NAV_ROW).max(NAV_TOP + 3.0 * NAV_ROW) } else { NAV_TOP + k as f32 * NAV_ROW };
     (top, top + NAV_ROW - 4.0)
 }
 
 pub const NAV_ITEMS: usize = 4;
+
+/// Navigation pane labels, by row. The open pane shows them; the closed pane, as tooltips.
+pub const NAV_LABELS: [&str; NAV_ITEMS] = ["", "Processes", "Performance", "Windows Task Manager"];
+
+/// The six Performance cards, in a grid under the page header that fits the window width.
+pub fn cards(nav_w: f32, width: f32, height: f32) -> Vec<D2D_RECT_F> {
+    const GAP: f32 = 12.0;
+    let (x0, y0, x1, y1) = (nav_w + PAD, TOP + PAD, width - PAD, height - PAD);
+    let cols = if x1 - x0 >= 900.0 { 3 } else if x1 - x0 >= 560.0 { 2 } else { 1 };
+    let rows = 6usize.div_ceil(cols);
+    let w = (x1 - x0 - GAP * (cols - 1) as f32) / cols as f32;
+    let h = (y1 - y0 - GAP * (rows - 1) as f32) / rows as f32;
+    (0..6)
+        .map(|i| {
+            let (l, t) = (x0 + (i % cols) as f32 * (w + GAP), y0 + (i / cols) as f32 * (h + GAP));
+            rect(l, t, l + w, t + h)
+        })
+        .collect()
+}
+
+/// The CPU card's graph switch, right of its detail line, by mode: 0 overall, 1 per core.
+pub const GRAPH_MODES: [&str; 2] = ["Overall", "Per core"];
+
+pub fn graph_modes(card: D2D_RECT_F) -> [D2D_RECT_F; 2] {
+    let (t, b, r) = (card.top + 28.0, card.top + 50.0, card.right - 12.0);
+    [rect(r - 136.0, t, r - 68.0, b), rect(r - 68.0, t, r, b)]
+}
 
 /// Navigation pane row under a point.
 pub fn nav_at(x: f32, y: f32, nav_w: f32, height: f32) -> Option<usize> {
@@ -81,14 +118,22 @@ pub fn nav_at(x: f32, y: f32, nav_w: f32, height: f32) -> Option<usize> {
     })
 }
 
-/// Page header buttons, right to left: (id, rect). 0 Run new task, 1 End task (Processes only).
-pub fn commands(width: f32, performance: bool) -> Vec<(usize, D2D_RECT_F)> {
-    let end = rect(width - PAD - 108.0, TITLE + 10.0, width - PAD, TITLE + 42.0);
-    if performance {
-        return vec![(0, rect(width - PAD - 140.0, TITLE + 10.0, width - PAD, TITLE + 42.0))];
+/// Page header buttons, laid out right to left from their label widths: (id, rect). 0 Run new
+/// task, 1 End task. A button is its icon and label with even padding, as in Task Manager.
+pub fn commands(width: f32, label_widths: &[f32]) -> Vec<(usize, D2D_RECT_F)> {
+    let mut right = width - PAD;
+    let mut out: Vec<(usize, D2D_RECT_F)> = Vec::new();
+    for (k, w) in label_widths.iter().enumerate().rev() {
+        let left = (right - COMMAND_LABEL_X - w - COMMAND_PAD).floor();
+        out.insert(0, (k, rect(left, TITLE + 10.0, right, TITLE + 42.0)));
+        right = left - 4.0;
     }
-    vec![(0, rect(end.left - 8.0 - 140.0, end.top, end.left - 8.0, end.bottom)), (1, end)]
+    out
 }
+
+/// Page header button insets: the icon starts at COMMAND_PAD, the label at COMMAND_LABEL_X.
+pub const COMMAND_PAD: f32 = 11.0;
+pub const COMMAND_LABEL_X: f32 = 39.0;
 
 /// Search box text area, left and right edges: after the magnifier, before the clear button.
 pub fn search_text(width: f32, has_text: bool) -> (f32, f32) {
@@ -127,13 +172,21 @@ mod tests {
     fn resize_moves_one_separator() {
         let w = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0];
         // CPU|Memory 20 right: CPU wider, Memory narrower, the rest still.
-        assert_eq!(super::resize(w, Some(0), 1, 20.0, 400.0), [92.0, 76.0, 64.0, 96.0, 128.0, 64.0]);
-        // Too far: Memory stops at the minimum.
-        assert_eq!(super::resize(w, Some(0), 1, 500.0, 400.0)[..2], [128.0, 40.0]);
+        let fit = [40.0; 6];
+        assert_eq!(super::resize(w, Some(0), 1, 20.0, 400.0, fit), [92.0, 76.0, 64.0, 96.0, 128.0, 64.0]);
+        // Too far: Memory stops at its content width.
+        assert_eq!(super::resize(w, Some(0), 1, 500.0, 400.0, fit)[..2], [128.0, 40.0]);
         // Name|CPU 30 left: CPU wider (Name gives the space), never Name under 120.
-        assert_eq!(super::resize(w, None, 0, -30.0, 400.0)[0], 102.0);
-        assert_eq!(super::resize(w, None, 0, -1000.0, 400.0)[0], 352.0);
-        assert_eq!(super::resize(w, None, 0, 1000.0, 400.0)[0], 40.0);
+        assert_eq!(super::resize(w, None, 0, -30.0, 400.0, fit)[0], 102.0);
+        assert_eq!(super::resize(w, None, 0, -1000.0, 400.0, fit)[0], 352.0);
+        assert_eq!(super::resize(w, None, 0, 1000.0, 400.0, fit)[0], 40.0);
+        // Disk|PID 100 left, Disk content 80: Disk shrinks to 80, then Name gives the other 52
+        // and the columns left of Disk slide.
+        let fit = [40.0, 40.0, 40.0, 40.0, 80.0, 40.0];
+        assert_eq!(super::resize(w, Some(4), 5, -100.0, 400.0, fit), [72.0, 96.0, 64.0, 96.0, 80.0, 164.0]);
+        // A column already under its content does not grow back: Name gives it all.
+        let fit = [40.0, 40.0, 40.0, 40.0, 200.0, 40.0];
+        assert_eq!(super::resize(w, Some(4), 5, -100.0, 400.0, fit)[4..], [128.0, 164.0]);
     }
 
     #[test]
