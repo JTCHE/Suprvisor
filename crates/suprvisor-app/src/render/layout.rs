@@ -3,6 +3,7 @@
 use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
 use super::*;
+use crate::settings::Settings;
 use crate::table::{Col, Row};
 
 /// Navigation pane width: icons only, or icons and labels.
@@ -10,45 +11,70 @@ pub fn nav_width(open: bool) -> f32 {
     if open { 200.0 } else { 48.0 }
 }
 
-/// Left and right edges of the shown columns, Name first, then the others in `order`. Numeric
-/// columns are anchored right; Name takes the rest, from the content layer's left edge `x0`.
-pub fn columns(x0: f32, width: f32, widths: &[f32; 6], order: &[Col; 6], hidden: &[bool; 6]) -> Vec<(Col, f32, f32)> {
-    let shown: Vec<Col> = order.iter().copied().filter(|c| !c.num().is_some_and(|i| hidden[i])).collect();
-    let mut out = vec![(Col::Name, 0.0, 0.0); shown.len() + 1];
-    let mut x = width - PAD - BAR;
-    for (k, c) in shown.iter().enumerate().rev() {
-        let w = widths[c.num().unwrap()];
-        out[k + 1] = (*c, x - w, x);
-        x -= w;
+/// Name's narrowest width: while dragging, and in a narrow window.
+pub const NAME_MIN: f32 = 120.0;
+
+/// Left and right edges of the shown columns: Name first, then the others in their order, from
+/// the content layer's left edge `x0`, scrolled left by `hscroll`. Name is at least its own width
+/// and fills the space the others leave. Past the window's right edge, the columns overflow.
+pub fn columns(x0: f32, width: f32, s: &Settings, hscroll: f32) -> Vec<(Col, f32, f32)> {
+    let shown: Vec<(Col, f32)> = s.order.iter().filter_map(|&c| c.num().filter(|&i| !s.hidden[i]).map(|i| (c, s.widths[i]))).collect();
+    let sum: f32 = shown.iter().map(|c| c.1).sum();
+    let left = x0 + PAD - hscroll;
+    let mut x = left + s.name_width.max(width - PAD - BAR - (x0 + PAD) - sum);
+    let mut out = vec![(Col::Name, left, x)];
+    for (c, w) in shown {
+        out.push((c, x, x + w));
+        x += w;
     }
-    out[0] = (Col::Name, x0 + PAD, x.max(x0 + PAD));
     out
 }
 
-/// Widths after dragging a separator by `d` DIPs from `start`, as in Task Manager. The column the
-/// separator moves into shrinks, but not under its content width `fit`. Past that, to the left,
-/// Name gives the space and the columns between slide; to the right, the separator stops.
-/// `left` and `right` are the columns beside it, by `Col::num`; `left` None is Name, which keeps
-/// at least NAME_MIN of its `name` width.
-pub fn resize(start: [f32; 6], left: Option<usize>, right: usize, d: f32, name: f32, fit: [f32; 6]) -> [f32; 6] {
-    const NAME_MIN: f32 = 120.0;
+/// How far the columns reach past the window's right edge.
+pub fn overflow(x0: f32, width: f32, s: &Settings) -> f32 {
+    let right = columns(x0, width, s, 0.0).last().map_or(0.0, |c| c.2);
+    (right - (width - PAD - BAR)).max(0.0)
+}
+
+/// Left and right of the horizontal scroll bar thumb on the track `l..r`, at the content layer's
+/// bottom edge; None when the columns fit.
+pub fn hthumb(l: f32, r: f32, overflow: f32, hscroll: f32) -> Option<(f32, f32)> {
+    if overflow < 0.5 {
+        return None;
+    }
+    let track = r - l;
+    let len = (track * track / (track + overflow)).max(24.0);
+    let x = l + (track - len) * (hscroll / overflow).clamp(0.0, 1.0);
+    Some((x, x + len))
+}
+
+/// Widths and Name width after dragging a separator by `d` DIPs from `start` and `name`, as in
+/// Task Manager. `left` and `right` are the columns beside it, by `Col::num`; `left` None is Name.
+/// The column on the left follows the separator. To the right, the right column shrinks to its
+/// content width `fit`; past that, the columns after it slide right and overflow. To the left,
+/// the left column shrinks to its content, then Name (to NAME_MIN); the space they give first takes
+/// back the `overflow` (the columns after the separator slide back), then widens the right column.
+pub fn resize(start: [f32; 6], name: f32, left: Option<usize>, right: usize, d: f32, fit: [f32; 6], overflow: f32) -> ([f32; 6], f32) {
     // A column already narrower than its content does not jump to it.
     let room = |i: usize| (start[i] - fit[i].min(start[i])).max(0.0);
-    let mut w = start;
+    let (mut w, mut n) = (start, name);
     if d >= 0.0 {
-        let d = d.min(room(right));
-        if let Some(l) = left {
-            w[l] += d; // else Name grows: it takes the rest
+        match left {
+            Some(l) => w[l] += d,
+            None => n += d,
         }
-        w[right] -= d;
+        w[right] -= d.min(room(right));
     } else {
-        let shrink = left.map_or(0.0, |l| (-d).min(room(l)));
+        let d = -d;
+        let from_left = left.map_or(0.0, |l| d.min(room(l)));
         if let Some(l) = left {
-            w[l] -= shrink;
+            w[l] -= from_left;
         }
-        w[right] += shrink + (-d - shrink).min((name - NAME_MIN).max(0.0));
+        let from_name = (d - from_left).min((name - NAME_MIN).max(0.0));
+        n -= from_name;
+        w[right] += (from_left + from_name - overflow).max(0.0);
     }
-    w
+    (w, n)
 }
 
 pub const MIN_WIDTH: f32 = 40.0;
@@ -171,36 +197,47 @@ mod tests {
     #[test]
     fn resize_moves_one_separator() {
         let w = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0];
-        // CPU|Memory 20 right: CPU wider, Memory narrower, the rest still.
         let fit = [40.0; 6];
-        assert_eq!(super::resize(w, Some(0), 1, 20.0, 400.0, fit), [92.0, 76.0, 64.0, 96.0, 128.0, 64.0]);
-        // Too far: Memory stops at its content width.
-        assert_eq!(super::resize(w, Some(0), 1, 500.0, 400.0, fit)[..2], [128.0, 40.0]);
+        let r = |left, right, d, fit, overflow| super::resize(w, 400.0, left, right, d, fit, overflow);
+        // CPU|Memory 20 right: CPU wider, Memory narrower, the rest still.
+        assert_eq!(r(Some(0), 1, 20.0, fit, 0.0).0, [92.0, 76.0, 64.0, 96.0, 128.0, 64.0]);
+        // Far right: Memory stops at its content width, CPU keeps growing: the rest overflows.
+        assert_eq!(r(Some(0), 1, 500.0, fit, 0.0).0[..2], [572.0, 40.0]);
         // Name|CPU 30 left: CPU wider (Name gives the space), never Name under 120.
-        assert_eq!(super::resize(w, None, 0, -30.0, 400.0, fit)[0], 102.0);
-        assert_eq!(super::resize(w, None, 0, -1000.0, 400.0, fit)[0], 352.0);
-        assert_eq!(super::resize(w, None, 0, 1000.0, 400.0, fit)[0], 40.0);
+        assert_eq!(r(None, 0, -30.0, fit, 0.0), ([102.0, 96.0, 64.0, 96.0, 128.0, 64.0], 370.0));
+        assert_eq!(r(None, 0, -1000.0, fit, 0.0).0[0], 352.0);
+        // Name|CPU 1000 right: Name follows, CPU stops at its content.
+        assert_eq!(r(None, 0, 1000.0, fit, 0.0), ([40.0, 96.0, 64.0, 96.0, 128.0, 64.0], 1400.0));
         // Disk|PID 100 left, Disk content 80: Disk shrinks to 80, then Name gives the other 52
         // and the columns left of Disk slide.
         let fit = [40.0, 40.0, 40.0, 40.0, 80.0, 40.0];
-        assert_eq!(super::resize(w, Some(4), 5, -100.0, 400.0, fit), [72.0, 96.0, 64.0, 96.0, 80.0, 164.0]);
+        assert_eq!(r(Some(4), 5, -100.0, fit, 0.0), ([72.0, 96.0, 64.0, 96.0, 80.0, 164.0], 348.0));
+        // The same with 30 of overflow: the overflow goes first, PID grows by the other 70.
+        assert_eq!(r(Some(4), 5, -100.0, fit, 30.0).0[4..], [80.0, 134.0]);
         // A column already under its content does not grow back: Name gives it all.
         let fit = [40.0, 40.0, 40.0, 40.0, 200.0, 40.0];
-        assert_eq!(super::resize(w, Some(4), 5, -100.0, 400.0, fit)[4..], [128.0, 164.0]);
+        assert_eq!(r(Some(4), 5, -100.0, fit, 0.0).0[4..], [128.0, 164.0]);
     }
 
     #[test]
     fn columns_follow_order_and_visibility() {
-        let w = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0];
-        let mut order = NUMS;
-        order.swap(0, 5); // PID first, CPU last
-        let mut hidden = [false; 6];
-        hidden[2] = true; // GPU
-        let c = super::columns(48.0, 1000.0, &w, &order, &hidden);
+        let mut s = crate::settings::Settings::default();
+        s.order.swap(0, 5); // PID first, CPU last
+        s.hidden[2] = true; // GPU
+        let c = super::columns(48.0, 1000.0, &s, 0.0);
         let names: Vec<Col> = c.iter().map(|c| c.0).collect();
         assert_eq!(names, [Col::Name, Col::Pid, Col::Ram, Col::Vram, Col::Disk, Col::Cpu]);
-        assert_eq!(c.last().unwrap().2, 1000.0 - super::PAD - super::BAR, "anchored right");
+        assert_eq!(c.last().unwrap().2, 1000.0 - super::PAD - super::BAR, "Name fills: the last column ends at the edge");
         assert!(c.windows(2).all(|p| p[0].2 == p[1].1), "no gaps");
         assert_eq!(c[0].1, 48.0 + super::PAD);
+        assert_eq!(super::overflow(48.0, 1000.0, &s), 0.0);
+        // A narrow window: Name keeps its width and the columns overflow; scrolling moves them all.
+        let c = super::columns(48.0, 500.0, &s, 30.0);
+        assert_eq!(c[0].2 - c[0].1, s.name_width);
+        assert_eq!(c[0].1, 48.0 + super::PAD - 30.0);
+        let over = super::overflow(48.0, 500.0, &s);
+        assert_eq!(over, 48.0 + super::PAD + s.name_width + 456.0 - (500.0 - super::PAD - super::BAR));
+        assert!(super::hthumb(48.0, 488.0, over, 0.0).is_some());
+        assert!(super::hthumb(48.0, 488.0, 0.0, 0.0).is_none());
     }
 }

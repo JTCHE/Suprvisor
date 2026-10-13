@@ -7,7 +7,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use super::*;
 use super::keys::{ctrl, shift};
 use super::view::Hit;
-use crate::render::{HEAD, TOP};
+use crate::render::{BAR, HEAD, TOP};
 
 impl App {
     pub(super) fn mouse_down(&mut self, x: f32, y: f32, double: bool) {
@@ -37,6 +37,12 @@ impl App {
                 self.drag = Drag::Header(c, x);
             }
             Hit::Row(i, chevron) => self.press_row(i, y, chevron || double, ctrl, shift),
+            Hit::HThumb => self.press_hthumb(x),
+            Hit::HTrack => {
+                let right = self.hbar().is_some_and(|(x0, _)| x > x0);
+                let page = (self.size().0 - self.nav_w) * 0.8;
+                self.hscroll_by(if right { page } else { -page });
+            }
             Hit::Thumb => {
                 if let Some((y0, _)) = render::thumb(self.size().1, self.table.rows.len(), self.table.scroll) {
                     self.drag = Drag::Thumb(y - y0);
@@ -79,14 +85,23 @@ impl App {
         let cols = self.layout_cols();
         let (left, right) = (cols[k - 1].0.num(), cols[k].0.num().unwrap());
         // Content widths of the two columns beside the separator: the floor they shrink to.
+        let overflow = self.overflow();
         let mut fit = [render::MIN_WIDTH; 6];
         for c in [cols[k - 1].0, cols[k].0] {
             if let Some(i) = c.num() {
                 fit[i] = self.fit_width(c);
             }
         }
-        self.drag = Drag::Column { left, right, x, start: self.settings.widths, name: cols[0].2 - cols[0].1, fit };
+        self.drag = Drag::Column { left, right, x, start: self.settings.widths, name: cols[0].2 - cols[0].1, fit, overflow };
         unsafe { SetCapture(self.hwnd) };
+    }
+
+    /// A press on the horizontal scroll bar thumb: starts dragging it.
+    fn press_hthumb(&mut self, x: f32) {
+        if let Some((x0, _)) = self.hbar() {
+            self.drag = Drag::HThumb(x - x0);
+            unsafe { SetCapture(self.hwnd) };
+        }
     }
 
     /// A press on row `i`; `toggle`: on its chevron, or a double-click.
@@ -110,9 +125,17 @@ impl App {
     pub(super) fn mouse_move(&mut self, x: f32, y: f32) {
         self.mouse = Some((x, y));
         match self.drag {
-            Drag::Column { left, right, x: x0, start, name, fit } => {
-                self.settings.widths = render::resize(start, left, right, x - x0, name, fit);
+            Drag::Column { left, right, x: x0, start, name, fit, overflow } => {
+                (self.settings.widths, self.settings.name_width) = render::resize(start, name, left, right, x - x0, fit, overflow);
                 self.dirty = true;
+            }
+            Drag::HThumb(grab) => {
+                let (l, r, over) = (self.nav_w, self.size().0 - BAR, self.overflow());
+                if let Some((x0, x1)) = render::hthumb(l, r, over, 0.0) {
+                    self.hscroll_to = ((x - grab - x0) / (r - l - (x1 - x0)) * over).clamp(0.0, over);
+                    self.hscroll = self.hscroll_to;
+                    self.dirty = true;
+                }
             }
             Drag::Thumb(grab) => {
                 let (_, h) = self.size();

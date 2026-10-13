@@ -65,6 +65,10 @@ impl Renderer {
             let x = size.width - BAR / 2.0;
             unsafe { t.FillRoundedRectangle(&rounded(x - 1.5, y0 + 2.0, x + 1.5, y1 - 2.0, 1.5), &b.dim) };
         }
+        if let Some((x0, x1)) = f.hbar {
+            let y = size.height - BAR / 2.0;
+            unsafe { t.FillRoundedRectangle(&rounded(x0 + 2.0, y - 1.5, x1 - 2.0, y + 1.5, 1.5), &b.dim) };
+        }
         unsafe { t.PopAxisAlignedClip() };
     }
 

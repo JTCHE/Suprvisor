@@ -90,7 +90,7 @@ impl App {
             }
             MENU_RESET => self.relayout(|a| {
                 let s = &mut a.settings;
-                (s.widths, s.order, s.hidden) = (settings::DEFAULT_WIDTHS, NUMS, [false; 6]);
+                (s.widths, s.name_width, s.order, s.hidden) = (settings::DEFAULT_WIDTHS, settings::DEFAULT_NAME_WIDTH, NUMS, [false; 6]);
             }),
             id if (MENU_COLUMN..MENU_COLUMN + 6).contains(&id) => self.relayout(|a| a.settings.hidden[id - MENU_COLUMN] ^= true),
             _ => return,

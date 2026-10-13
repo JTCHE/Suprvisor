@@ -41,7 +41,8 @@ enum Drag {
     Reorder(Col, f32),
     /// A separator: the columns on its two sides trade width. Mouse x, widths and Name width at
     /// the start.
-    Column { left: Option<usize>, right: usize, x: f32, start: [f32; 6], name: f32, fit: [f32; 6] },
+    Column { left: Option<usize>, right: usize, x: f32, start: [f32; 6], name: f32, fit: [f32; 6], overflow: f32 },
+    HThumb(f32), // mouse x minus the horizontal thumb's left edge
     Thumb(f32), // mouse y minus the thumb top
     /// Pressed on a row at this y: a move selects the rows it passes.
     Row(usize, f32),
@@ -81,6 +82,8 @@ struct App {
     nav_w: f32,
     nav_pill: f32,
     col_off: [f32; 7], // per column (COLS order): drawn left edge minus its place
+    hscroll: f32,      // the columns scroll left by this much when they overflow
+    hscroll_to: f32,
     last_frame: Instant,
     app_icon: Option<shell::Icon>,
     pending_show: Option<bool>, // show asked before the first data: shows when it comes (or soon)
@@ -148,6 +151,8 @@ impl App {
             nav_w,
             nav_pill: 0.0,
             col_off: [0.0; 7],
+            hscroll: 0.0,
+            hscroll_to: 0.0,
             last_frame: Instant::now(),
             app_icon: shell::app_icon(32),
             pending_show: None,

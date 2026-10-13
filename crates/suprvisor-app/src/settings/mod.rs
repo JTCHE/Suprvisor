@@ -16,6 +16,8 @@ pub struct Settings {
     pub cores: bool,
     /// Widths in DIPs of the columns after Name (CPU, RAM, GPU, VRAM, Disk, PID). Name takes the rest.
     pub widths: [f32; 6],
+    /// Name's own width: the narrowest it gets. It also fills the space the others leave.
+    pub name_width: f32,
     /// Display order of the columns after Name (Name stays first).
     pub order: [Col; 6],
     /// Hidden columns, by `Col::num`.
@@ -26,11 +28,12 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { sort: Col::Name, desc: false, grouped: true, performance: false, nav: false, cores: false, widths: DEFAULT_WIDTHS, order: NUMS, hidden: [false; 6], window: None }
+        Self { sort: Col::Name, desc: false, grouped: true, performance: false, nav: false, cores: false, widths: DEFAULT_WIDTHS, name_width: DEFAULT_NAME_WIDTH, order: NUMS, hidden: [false; 6], window: None }
     }
 }
 
 pub const DEFAULT_WIDTHS: [f32; 6] = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0];
+pub const DEFAULT_NAME_WIDTH: f32 = 240.0;
 
 fn file() -> Option<PathBuf> {
     Some(PathBuf::from(std::env::var_os("APPDATA")?).join(if crate::test() { "suprvisor-test" } else { "suprvisor" }).join("settings.ini"))
@@ -54,6 +57,7 @@ impl Settings {
                 "tab" => s.performance = v.trim() == "performance",
                 "nav" => s.nav = v.trim() == "open",
                 "cpu" => s.cores = v.trim() == "cores",
+                "name" => s.name_width = v.trim().parse().unwrap_or(s.name_width).clamp(120.0, 2000.0),
                 "columns" => s.widths = nums(v).unwrap_or(s.widths).map(|w: f32| w.clamp(32.0, 600.0)),
                 "order" => {
                     let o: Vec<Col> = v.split(',').filter_map(|c| Col::from_id(c.trim())).filter(|c| c.num().is_some()).collect();
@@ -84,11 +88,12 @@ impl Settings {
         let order = self.order.map(|c| c.id()).join(",");
         let hidden: Vec<&str> = NUMS.iter().zip(self.hidden).filter(|(_, h)| *h).map(|(c, _)| c.id()).collect();
         let mut text = format!(
-            "sort={}\ndesc={}\ngrouped={}\ntab={tab}\nnav={nav}\ncpu={}\ncolumns={w}\norder={order}\nhidden={}\n",
+            "sort={}\ndesc={}\ngrouped={}\ntab={tab}\nnav={nav}\ncpu={}\nname={}\ncolumns={w}\norder={order}\nhidden={}\n",
             self.sort.id(),
             self.desc as u8,
             self.grouped as u8,
             if self.cores { "cores" } else { "overall" },
+            self.name_width.round(),
             hidden.join(",")
         );
         if let Some(([l, t, r, b], max)) = self.window {

@@ -148,7 +148,7 @@ impl App {
             }
             VK_TAB => self.tab(shift),
             VK_ESCAPE if !matches!(self.drag, Drag::None) => {
-                if matches!(self.drag, Drag::Reorder(..) | Drag::Column { .. } | Drag::Thumb(_) | Drag::Select { .. } | Drag::Text) {
+                if matches!(self.drag, Drag::Reorder(..) | Drag::Column { .. } | Drag::Thumb(_) | Drag::HThumb(_) | Drag::Select { .. } | Drag::Text) {
                     let _ = unsafe { ReleaseCapture() };
                 }
                 self.drag = Drag::None;

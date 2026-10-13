@@ -14,6 +14,8 @@ pub(super) enum Hit {
     Edge(usize),      // separator at the left of shown column k (k >= 1): drag to resize
     Row(usize, bool), // row, on its chevron
     Thumb,
+    HThumb,
+    HTrack,
     Track,
     Nav(usize), // 0 the menu button, 1 Processes, 2 Performance, 3 Windows Task Manager
     Search,
@@ -27,8 +29,23 @@ pub(super) enum Hit {
 impl App {
     /// Shown columns at their places.
     pub(super) fn layout_cols(&self) -> Vec<(Col, f32, f32)> {
-        let s = &self.settings;
-        render::columns(self.nav_w, self.size().0, &s.widths, &s.order, &s.hidden)
+        render::columns(self.nav_w, self.size().0, &self.settings, self.hscroll.min(self.overflow()))
+    }
+
+    /// How far the columns reach past the window's right edge.
+    pub(super) fn overflow(&self) -> f32 {
+        render::overflow(self.nav_w, self.size().0, &self.settings)
+    }
+
+    /// The horizontal scroll bar thumb, when the columns overflow.
+    pub(super) fn hbar(&self) -> Option<(f32, f32)> {
+        let over = self.overflow();
+        render::hthumb(self.nav_w, self.size().0 - BAR, over, self.hscroll.min(over))
+    }
+
+    pub(super) fn hscroll_by(&mut self, dx: f32) {
+        self.hscroll_to = (self.hscroll_to.min(self.overflow()) + dx).clamp(0.0, self.overflow());
+        self.dirty = true;
     }
 
     /// Shown columns where they are drawn: sliding to their places, or following the mouse.
@@ -89,6 +106,9 @@ impl App {
                 .map_or(Hit::None, Hit::GraphMode);
         }
         let rows_top = TOP + HEAD;
+        if let Some((x0, x1)) = self.hbar().filter(|_| y >= h - BAR && x < w - BAR) {
+            return if (x0..x1).contains(&x) { Hit::HThumb } else { Hit::HTrack };
+        }
         if x >= w - BAR && y >= rows_top {
             return match render::thumb(h, self.table.rows.len(), self.table.scroll) {
                 Some((y0, y1)) if (y0..y1).contains(&y) => Hit::Thumb,
@@ -154,6 +174,10 @@ impl App {
         }
         let pill = self.pill_target();
         moving |= approach(&mut self.nav_pill, pill, 20.0, dt, 0.3);
+        if !matches!(self.drag, Drag::HThumb(_)) {
+            let to = self.hscroll_to.min(self.overflow());
+            moving |= approach(&mut self.hscroll, to, 22.0, dt, 0.3);
+        }
         for o in &mut self.col_off {
             moving |= approach(o, 0.0, 18.0, dt, 0.3);
         }
@@ -204,6 +228,7 @@ impl App {
             history: &self.snap.history,
             nav_w: self.nav_w,
             nav_pill: self.nav_pill,
+            hbar: self.hbar(),
             search: &self.edit,
             caret: self.caret_on && self.active,
             focus: self.focus,

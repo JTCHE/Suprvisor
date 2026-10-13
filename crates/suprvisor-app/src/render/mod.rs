@@ -117,6 +117,7 @@ pub struct Frame<'a> {
     pub history: &'a VecDeque<System>,
     pub nav_w: f32,    // navigation pane width, animated
     pub nav_pill: f32, // center of the selection pill in the navigation pane, animated
+    pub hbar: Option<(f32, f32)>, // horizontal scroll bar thumb, when the columns overflow
     pub search: &'a Edit,
     pub caret: bool, // the caret is in its on phase
     pub focus: Option<Focus>,

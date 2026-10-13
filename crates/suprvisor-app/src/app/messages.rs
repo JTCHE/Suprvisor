@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::nonclient::{caption_message, frame_message};
 use super::*;
-use super::keys::{TEST_MODS, ctrl, down};
+use super::keys::{TEST_MODS, ctrl, down, shift};
 use super::window::style_window;
 use crate::{WM_APP_DATA, WM_APP_EXIT, WM_APP_HIDE, WM_APP_HOTKEY, WM_APP_ICONS, WM_APP_SHOW, WM_APP_TEST_MODS, WM_APP_TEST_SNAP, test};
 
@@ -262,7 +262,16 @@ fn mouse_message(a: &mut App, _hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
             a.context_menu(Some(hit));
             LRESULT(0)
         }
-        WM_MOUSEWHEEL if a.performance => LRESULT(0),
+        WM_MOUSEWHEEL | WM_MOUSEHWHEEL if a.performance => LRESULT(0),
+        // Tilt wheel and touchpad sideways, or Shift with the wheel: the columns scroll.
+        WM_MOUSEHWHEEL => {
+            a.hscroll_by((wp.0 >> 16) as u16 as i16 as f32 / 120.0 * 48.0);
+            LRESULT(0)
+        }
+        WM_MOUSEWHEEL if shift() => {
+            a.hscroll_by(-((wp.0 >> 16) as u16 as i16 as f32) / 120.0 * 48.0);
+            LRESULT(0)
+        }
         WM_MOUSEWHEEL => {
             // Notches of 120; touchpads send less per message, and the rows follow smoothly.
             let delta = (wp.0 >> 16) as u16 as i16 as f32;
