@@ -6,6 +6,7 @@ mod messages;
 mod mouse;
 mod nonclient;
 mod rows;
+mod tray;
 mod view;
 mod window;
 

@@ -18,7 +18,8 @@ Windows to stock.
 
 ## Use
 The window follows Task Manager: search box in the title bar, navigation pane on the left.
-The X, Ctrl+W and Esc (with an empty filter) close Suprvisor. No tray icon.
+The X, Ctrl+W and Esc (with an empty filter) hide Suprvisor to the tray. Exit is in the tray menu.
+Suprvisor starts hidden at logon.
 "Windows Task Manager" in the navigation pane opens the real one.
 
 - Type anywhere or Ctrl+F to filter. The search box has the keys of a Windows edit control.

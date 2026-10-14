@@ -33,15 +33,16 @@ try {
     Copy-Item "$PSScriptRoot\target\release\suprvisor.exe" $exe -Force
     Say "Copied $exe"
 
-    # 2. Two tasks that run elevated with no UAC prompt, on demand: Suprvisor (the IFEO stub starts it
-    #    when it does not run) and the real Task Manager. Priority 1 = high: it must answer when the
+    # 2. Two tasks that run elevated with no UAC prompt: Suprvisor, hidden in the tray (at logon, and
+    #    from the IFEO stub when it does not run), and the real Task Manager. Priority 1 = high: it must answer when the
     #    machine is saturated. Tasks from an earlier install go first.
     Get-ScheduledTask -TaskPath $tasks -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false
     $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
         -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Priority 1
     Register-ScheduledTask -TaskPath $tasks -TaskName Start -Force -Principal $principal -Settings $settings `
-        -Action (New-ScheduledTaskAction -Execute $exe -Argument '--resident') | Out-Null
+        -Action (New-ScheduledTaskAction -Execute $exe -Argument '--resident') `
+        -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $User) | Out-Null
     Register-ScheduledTask -TaskPath $tasks -TaskName Taskmgr -Force -Principal $principal -Settings $settings `
         -Action (New-ScheduledTaskAction -Execute $exe -Argument '--real-taskmgr') | Out-Null
     Say 'Registered the tasks'
@@ -54,6 +55,7 @@ try {
     if ($old -and $old -ne $ours) { Set-ItemProperty $ifeo SuprvisorPreviousDebugger $old }
     Set-ItemProperty $ifeo Debugger $ours
 
+    Start-ScheduledTask -TaskPath $tasks -TaskName Start
     Say 'Installed. Ctrl+Shift+Esc opens Suprvisor.'
 }
 catch {

@@ -141,7 +141,7 @@ impl App {
                 self.set_focus(Some(Focus::Search), true);
                 self.edit.select_all();
             }
-            VK_W if ctrl => self.close(),
+            VK_W if ctrl => self.hide(),
             VK_N if ctrl => self.run_new_task(),
             VK_F5 => {
                 let _ = self.signal.send(Signal::Rescan);
@@ -158,7 +158,7 @@ impl App {
                 self.edit.clear();
                 self.filter_changed();
             }
-            VK_ESCAPE => self.close(),
+            VK_ESCAPE => self.hide(),
             _ => return self.focus_key(vk, ctrl, shift),
         }
         true

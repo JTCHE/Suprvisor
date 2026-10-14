@@ -1,8 +1,8 @@
 //! Suprvisor: a task manager. Ctrl+Shift+Esc shows it (keyboard hook, taskmgr/hotkey.rs, while it runs;
 //! the IFEO redirect, taskmgr, while it does not), and so does running suprvisor.exe again.
-//! Closing the window ends the process.
+//! The process stays resident in the tray: closing the window hides it, the tray menu exits.
 //!   suprvisor.exe                 show (start it if none runs)
-//!   suprvisor.exe --resident      start hidden (the Start task: the IFEO stub then shows it)
+//!   suprvisor.exe --resident      start hidden (the Start task, at logon and from the IFEO stub)
 //!   suprvisor.exe --inactive      start shown without taking the focus (audit/stress.ps1)
 //!   suprvisor.exe --hide          hide
 //!   suprvisor.exe --exit          quit the running process
@@ -44,6 +44,7 @@ const WM_APP_HOTKEY: u32 = WM_APP + 6; // Ctrl+Shift+Esc, from the keyboard hook
 // user's mouse or takes the keyboard focus. These carry what posted messages cannot.
 const WM_APP_TEST_MODS: u32 = WM_APP + 7; // wParam: 1 Ctrl, 2 Shift, 4 Alt, held from now on
 const WM_APP_TEST_SNAP: u32 = WM_APP + 8; // write the next frame to %TEMP%\suprvisor-test.bmp
+const WM_APP_TRAY: u32 = WM_APP + 9; // the tray icon's callback
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();

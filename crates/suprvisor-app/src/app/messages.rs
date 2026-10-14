@@ -57,7 +57,7 @@ fn handle(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
         }
     }
     let Some(a) = app(hwnd) else { return unsafe { DefWindowProcW(hwnd, msg, wp, lp) } };
-    for group in [window_message, life_message, app_message, frame_message, caption_message, mouse_message, key_message] {
+    for group in [window_message, life_message, super::tray::tray_message, app_message, frame_message, caption_message, mouse_message, key_message] {
         if let Some(r) = group(a, hwnd, msg, wp, lp) {
             return r; // after WM_DESTROY, `a` is gone: return at once
         }
@@ -164,8 +164,12 @@ fn life_message(a: &mut App, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Op
             a.dirty = true;
             LRESULT(0)
         }
-        WM_CLOSE | WM_APP_EXIT => {
-            a.close(); // closing ends the process
+        WM_CLOSE => {
+            a.hide(); // the process stays in the tray
+            LRESULT(0)
+        }
+        WM_APP_EXIT => {
+            a.exit();
             LRESULT(0)
         }
         WM_SETTINGCHANGE => {
@@ -176,6 +180,7 @@ fn life_message(a: &mut App, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> Op
         }
         WM_DESTROY => {
             a.save();
+            super::tray::remove(hwnd);
             unsafe {
                 SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
                 drop(Box::from_raw(a as *mut App));

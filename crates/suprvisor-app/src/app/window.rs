@@ -47,7 +47,9 @@ pub fn run(resident: bool, activate: bool) -> Result<()> {
     place(hwnd, window);
     collector::spawn(hwnd, data, wanted, signal_rx, !performance, !resident);
     if !test() {
-        taskmgr::install(hwnd, WM_APP_HOTKEY); // a test instance must not take the user's hotkey
+        // A test instance must not take the user's hotkey or add to the tray.
+        taskmgr::install(hwnd, WM_APP_HOTKEY);
+        super::tray::add(hwnd);
     }
     // Started elevated by the Start task; the IFEO stub and suprvisor.exe started from Explorer
     // are not. UIPI drops their messages unless allowed here.
@@ -65,20 +67,25 @@ pub fn run(resident: bool, activate: bool) -> Result<()> {
 }
 
 fn register_class(instance: HMODULE) -> Result<()> {
-    let icon = |size: i32| unsafe { LoadImageW(Some(instance.into()), PCWSTR(1 as _), IMAGE_ICON, size, size, LR_DEFAULTCOLOR) }.ok().map(|h| HICON(h.0));
     let wc = WNDCLASSEXW {
         cbSize: size_of::<WNDCLASSEXW>() as u32,
         style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
         lpfnWndProc: Some(wndproc),
         hInstance: instance.into(),
         hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
-        hIcon: icon(unsafe { GetSystemMetrics(SM_CXICON) }).unwrap_or_default(),
-        hIconSm: icon(unsafe { GetSystemMetrics(SM_CXSMICON) }).unwrap_or_default(),
+        hIcon: app_icon(unsafe { GetSystemMetrics(SM_CXICON) }).unwrap_or_default(),
+        hIconSm: app_icon(unsafe { GetSystemMetrics(SM_CXSMICON) }).unwrap_or_default(),
         lpszClassName: class(),
         ..Default::default()
     };
     unsafe { RegisterClassExW(&wc) };
     Ok(())
+}
+
+/// The app icon (res/app.rc) at `size` pixels.
+pub(super) fn app_icon(size: i32) -> Option<HICON> {
+    let instance = unsafe { GetModuleHandleW(None) }.ok()?;
+    unsafe { LoadImageW(Some(instance.into()), PCWSTR(1 as _), IMAGE_ICON, size, size, LR_DEFAULTCOLOR) }.ok().map(|h| HICON(h.0))
 }
 
 /// Puts the hidden window at its saved place, and styles its frame.
@@ -229,7 +236,8 @@ impl App {
         let _ = self.signal.send(Signal::Visible(false));
     }
 
-    pub(super) fn close(&mut self) {
+    /// Ends the process (tray menu, `--exit`). Closing the window only hides it.
+    pub(super) fn exit(&mut self) {
         let _ = unsafe { DestroyWindow(self.hwnd) };
     }
 }
