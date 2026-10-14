@@ -19,7 +19,7 @@ const START_TASK: &str = r"\Suprvisor\Start";
 const TASKMGR_TASK: &str = r"\Suprvisor\Taskmgr";
 
 /// Shows Suprvisor: the running one, or a new one through the installed task (elevated, no UAC
-/// prompt). No answer in 200 ms from a running one, or not installed: the real Task Manager.
+/// prompt). No answer in 2 s from a running one, or not installed: the real Task Manager.
 pub fn redirect(taskmgr: &[String]) -> Result<()> {
     if let Ok(h) = unsafe { FindWindowW(crate::class(), None) } {
         if show(h) {
@@ -34,13 +34,14 @@ pub fn redirect(taskmgr: &[String]) -> Result<()> {
     real_taskmgr(taskmgr) // not installed: works when this process is elevated
 }
 
-/// Asks the window `h` to show, and passes it the right to take the foreground.
+/// Asks the window `h` to show, and passes it the right to take the foreground. A hung window
+/// fails at once (SMTO_ABORTIFHUNG); the timeout covers a slow first show from a cold cache.
 fn show(h: HWND) -> bool {
     let mut pid = 0;
     unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
     let _ = unsafe { AllowSetForegroundWindow(pid) };
     let flags = SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT;
-    unsafe { SendMessageTimeoutW(h, crate::WM_APP_SHOW, WPARAM(0), LPARAM(0), flags, 200, None) }.0 != 0
+    unsafe { SendMessageTimeoutW(h, crate::WM_APP_SHOW, WPARAM(0), LPARAM(0), flags, 2000, None) }.0 != 0
 }
 
 /// Runs an installed task (install.ps1). The tasks run elevated without a UAC prompt.

@@ -7,6 +7,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::*;
 use windows::Win32::UI::Controls::MARGINS;
 use windows::Win32::UI::HiDpi::*;
+use windows::Win32::UI::Input::KeyboardAndMouse::{INPUT, INPUT_MOUSE, SendInput};
 use windows::Win32::Foundation::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, Result, w};
@@ -45,7 +46,9 @@ pub fn run(resident: bool, activate: bool) -> Result<()> {
     };
     place(hwnd, window);
     collector::spawn(hwnd, data, wanted, signal_rx, !performance, !resident);
-    taskmgr::install(hwnd, WM_APP_HOTKEY);
+    if !test() {
+        taskmgr::install(hwnd, WM_APP_HOTKEY); // a test instance must not take the user's hotkey
+    }
     // Started elevated by the Start task; the IFEO stub and suprvisor.exe started from Explorer
     // are not. UIPI drops their messages unless allowed here.
     for m in [WM_APP_SHOW, WM_APP_HIDE, WM_APP_EXIT] {
@@ -206,12 +209,11 @@ impl App {
             let _ = ShowWindow(self.hwnd, cmd);
             if activate && (!SetForegroundWindow(self.hwnd).as_bool() || GetForegroundWindow() != self.hwnd) {
                 // Foreground lock: after the hook swallowed the key, this process did not get the
-                // last input. Joining the foreground thread's input queue lifts the lock.
-                let fg = GetWindowThreadProcessId(GetForegroundWindow(), None);
-                let me = GetCurrentThreadId();
-                let _ = AttachThreadInput(me, fg, true);
+                // last input. An empty mouse input (no move, no button) makes it the last input.
+                // Joining the foreground thread's queue fails when no window has the foreground.
+                let input = INPUT { r#type: INPUT_MOUSE, ..Default::default() };
+                let _ = SendInput(&[input], size_of::<INPUT>() as i32);
                 let _ = SetForegroundWindow(self.hwnd);
-                let _ = AttachThreadInput(me, fg, false);
             }
         }
         if !self.shown {
