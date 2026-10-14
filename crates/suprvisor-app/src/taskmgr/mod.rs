@@ -53,15 +53,18 @@ fn run(task: &str) -> bool {
 
 /// Starts Suprvisor elevated through the Start task, then shows it. False when not installed.
 /// The task starts it hidden: only this process holds the right to take the foreground, so the
-/// window shows when this process asks.
+/// window shows when this process asks. The window exists a moment before it accepts messages
+/// from a process that is not elevated (UIPI filter, app/window.rs), so a refused show is retried.
 pub fn start_elevated() -> bool {
     if !run(START_TASK) {
         return false;
     }
     let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while std::time::Instant::now() < until {
-        if let Ok(h) = unsafe { FindWindowW(crate::class(), None) } {
-            return show(h);
+        if let Ok(h) = unsafe { FindWindowW(crate::class(), None) }
+            && show(h)
+        {
+            return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
