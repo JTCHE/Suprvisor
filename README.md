@@ -2,7 +2,7 @@
 
 ![A screenshot of Suprvisor, a drop-in replacement of the Windows Task Manager](docs/cover.png)
 
-**<center>A fast replacement for the Windows 11 Task Manager, written in Rust.</center>**
+**<p align="center">A fast replacement for the Windows 11 Task Manager, written in Rust.</p>**
 
 The stock Task Manager lags at launch, freezes for over a second when you sort a column,
 and draws broken rows while it loads. \
