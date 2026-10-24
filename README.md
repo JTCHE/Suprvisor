@@ -1,22 +1,29 @@
 # Suprvisor
 
-A fast replacement for the Windows 11 Task Manager, written in Rust.
+![A screenshot of Suprvisor, a drop-in replacement of the Windows Task Manager](docs/cover.png)
+
+**<center>A fast replacement for the Windows 11 Task Manager, written in Rust.</center>**
 
 The stock Task Manager lags at launch, freezes for over a second when you sort a column,
-and draws broken rows while it loads (see `docs/taskmgr-render-glitch.png`). It also hides
-per-process VRAM use. Suprvisor opens on Ctrl+Shift+Esc in one frame and shows CPU, RAM, GPU
+and draws broken rows while it loads. \
+It also hides per-process VRAM use.
+
+Suprvisor opens on Ctrl+Shift+Esc in one frame and shows CPU, RAM, GPU
 and VRAM per process.
 
 ## Install
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
+
 Builds, copies to `C:\Program Files\Suprvisor`, registers two elevated tasks and redirects
 `taskmgr.exe` to Suprvisor (IFEO). One UAC click. While Suprvisor runs, Ctrl+Shift+Esc goes to
 its keyboard hook. When it does not run, the redirect starts it elevated. `uninstall.ps1` returns
 Windows to stock.
 
 ## Use
+
 The window follows Task Manager: search box in the title bar, navigation pane on the left.
 The X, Ctrl+W and Esc (with an empty filter) hide Suprvisor to the tray. Exit is in the tray menu.
 Suprvisor starts hidden at logon.
@@ -31,5 +38,3 @@ Suprvisor starts hidden at logon.
   Shift+F10 or the menu key opens the context menu.
 - Ctrl+N or "Run new task" starts a process. Ctrl+1/Ctrl+2 or Ctrl+Tab switch pages.
 - Performance shows 60 s graphs of CPU, each core, memory, GPU, VRAM, disk and network.
-
-Design decisions live in the Obsidian vault: `side projects/Suprvisor - Task Manager Rewrite/Suprvisor - Decisions.md`.
