@@ -21,7 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::collector::{Signal, Snapshot};
 use crate::edit::Edit;
 use crate::render::{self, Focus, Hot, Theme};
-use crate::table::{COLS, Col, Key, Table};
+use crate::table::{COLS, Col, Key, NUMS, Table};
 use crate::{settings, shell, trace};
 
 pub use window::run;
@@ -42,7 +42,7 @@ enum Drag {
     Reorder(Col, f32),
     /// A separator: the columns on its two sides trade width. Mouse x, widths and Name width at
     /// the start.
-    Column { left: Option<usize>, right: usize, x: f32, start: [f32; 6], name: f32, fit: [f32; 6], overflow: f32 },
+    Column { left: Option<usize>, right: usize, x: f32, start: [f32; NUMS.len()], name: f32, fit: [f32; NUMS.len()], overflow: f32 },
     HThumb(f32), // mouse x minus the horizontal thumb's left edge
     Thumb(f32), // mouse y minus the thumb top
     /// Pressed on a row at this y: a move selects the rows it passes.
@@ -82,7 +82,7 @@ struct App {
     scroll_to: f32,
     nav_w: f32,
     nav_pill: f32,
-    col_off: [f32; 7], // per column (COLS order): drawn left edge minus its place
+    col_off: [f32; COLS.len()], // per column (COLS order): drawn left edge minus its place
     hscroll: f32,      // the columns scroll left by this much when they overflow
     hscroll_to: f32,
     last_frame: Instant,
@@ -151,7 +151,7 @@ impl App {
             scroll_to: 0.0,
             nav_w,
             nav_pill: 0.0,
-            col_off: [0.0; 7],
+            col_off: [0.0; COLS.len()],
             hscroll: 0.0,
             hscroll_to: 0.0,
             last_frame: Instant::now(),

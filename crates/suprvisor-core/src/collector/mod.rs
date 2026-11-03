@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::HANDLE;
 
-use crate::{Proc, System, gpu, handles, io, procs, system};
+use crate::{Proc, System, gpu, handles, io, net, procs, system};
 
 /// Per-process state kept between calls: last values, the handle, and the counters rates come from.
 struct Tracked {
@@ -79,6 +79,7 @@ impl Tracked {
 pub struct Collector {
     procs: procs::Procs,
     io: io::Io,
+    net: net::Net,
     gpu: gpu::Adapters,
     cpu_times: system::SystemTimes,
     tracked: HashMap<(u32, i64), Tracked>,
@@ -95,6 +96,7 @@ impl Collector {
         Ok(Self {
             procs: procs::Procs::new(),
             io: io::Io::new(),
+            net: net::Net::new(),
             gpu: gpu::Adapters::new(),
             cpu_times: system::SystemTimes::default(),
             tracked: HashMap::new(),
@@ -157,7 +159,7 @@ impl Collector {
         }
         // Exited processes drop here (closing their handles). Unopenable ones wait for scan_full.
         self.tracked.retain(|_, t| t.seen == generation || t.handle.is_invalid());
-        self.tracked.values().map(|t| t.p.clone()).collect()
+        self.listed()
     }
 
     /// Full kernel list: per-process I/O for every process, and the processes that no handle can open.
@@ -190,14 +192,16 @@ impl Collector {
             }
         }
         self.tracked.retain(|k, _| alive.contains(k));
-        Ok(self.tracked.values().map(|t| t.p.clone()).collect())
+        Ok(self.listed())
     }
 
-    /// Updates CPU, RAM, GPU and VRAM of `rows` in place; with `io`, also I/O (slow, ~150 k cycles per row).
+    /// Updates CPU, RAM, GPU, VRAM and network of `rows` in place; with `io`, also I/O (slow, ~150 k cycles per row).
     /// Rows unknown to the last scan, or with no handle, are left as they are.
     pub fn refresh(&mut self, rows: &mut [Proc], io: bool) {
         let now = Instant::now();
+        self.net.update();
         for p in rows {
+            [p.net_recv, p.net_sent] = self.net.rate(p.pid);
             let Some(t) = self.tracked.get_mut(&(p.pid, p.create_time)) else { continue };
             if t.handle.is_invalid() {
                 continue;
@@ -217,6 +221,17 @@ impl Collector {
             (p.cpu, p.private_ws, p.gpu, p.vram) = (t.p.cpu, t.p.private_ws, t.p.gpu, t.p.vram);
             (p.io_read, p.io_write) = (t.p.io_read, t.p.io_write);
         }
+    }
+
+    /// The tracked processes, with their network rates.
+    fn listed(&mut self) -> Vec<Proc> {
+        self.net.update();
+        let net = &self.net;
+        let with_rates = |t: &Tracked| {
+            let [net_recv, net_sent] = net.rate(t.p.pid);
+            Proc { net_recv, net_sent, ..t.p.clone() }
+        };
+        self.tracked.values().map(with_rates).collect()
     }
 
     /// State for a process seen for the first time, through `h` (may be invalid).

@@ -86,7 +86,7 @@ impl App {
         let (left, right) = (cols[k - 1].0.num(), cols[k].0.num().unwrap());
         // Content widths of the two columns beside the separator: the floor they shrink to.
         let overflow = self.overflow();
-        let mut fit = [render::MIN_WIDTH; 6];
+        let mut fit = [render::MIN_WIDTH; NUMS.len()];
         for c in [cols[k - 1].0, cols[k].0] {
             if let Some(i) = c.num() {
                 fit[i] = self.fit_width(c);

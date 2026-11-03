@@ -14,25 +14,25 @@ pub struct Settings {
     pub nav: bool,
     /// The CPU card shows one graph per logical processor (else the overall graph).
     pub cores: bool,
-    /// Widths in DIPs of the columns after Name (CPU, RAM, GPU, VRAM, Disk, PID). Name takes the rest.
-    pub widths: [f32; 6],
+    /// Widths in DIPs of the columns after Name (CPU, RAM, GPU, VRAM, Disk, Network, PID). Name takes the rest.
+    pub widths: [f32; NUMS.len()],
     /// Name's own width: the narrowest it gets. It also fills the space the others leave.
     pub name_width: f32,
     /// Display order of the columns after Name (Name stays first).
-    pub order: [Col; 6],
+    pub order: [Col; NUMS.len()],
     /// Hidden columns, by `Col::num`.
-    pub hidden: [bool; 6],
+    pub hidden: [bool; NUMS.len()],
     /// Normal (restored) window rect in pixels, and whether the window was maximized.
     pub window: Option<([i32; 4], bool)>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { sort: Col::Name, desc: false, grouped: true, performance: false, nav: false, cores: false, widths: DEFAULT_WIDTHS, name_width: DEFAULT_NAME_WIDTH, order: NUMS, hidden: [false; 6], window: None }
+        Self { sort: Col::Name, desc: false, grouped: true, performance: false, nav: false, cores: false, widths: DEFAULT_WIDTHS, name_width: DEFAULT_NAME_WIDTH, order: NUMS, hidden: [false; NUMS.len()], window: None }
     }
 }
 
-pub const DEFAULT_WIDTHS: [f32; 6] = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0];
+pub const DEFAULT_WIDTHS: [f32; NUMS.len()] = [72.0, 96.0, 64.0, 96.0, 128.0, 144.0, 64.0];
 pub const DEFAULT_NAME_WIDTH: f32 = 240.0;
 
 fn file() -> Option<PathBuf> {
@@ -62,7 +62,7 @@ impl Settings {
                 "order" => {
                     let o: Vec<Col> = v.split(',').filter_map(|c| Col::from_id(c.trim())).filter(|c| c.num().is_some()).collect();
                     // Each column once, or the file is ignored.
-                    if o.len() == 6 && NUMS.iter().all(|c| o.contains(c)) {
+                    if o.len() == NUMS.len() && NUMS.iter().all(|c| o.contains(c)) {
                         s.order.copy_from_slice(&o);
                     }
                 }

@@ -26,13 +26,14 @@ pub enum Col {
     Gpu,
     Vram,
     Disk,
+    Net,
 }
 
-pub const COLS: [Col; 7] = [Col::Name, Col::Cpu, Col::Ram, Col::Gpu, Col::Vram, Col::Disk, Col::Pid];
+pub const COLS: [Col; 8] = [Col::Name, Col::Cpu, Col::Ram, Col::Gpu, Col::Vram, Col::Disk, Col::Net, Col::Pid];
 
 /// The columns after Name, in their default order. Widths, order and visibility are kept per column
 /// in this order (`Col::num`).
-pub const NUMS: [Col; 6] = [Col::Cpu, Col::Ram, Col::Gpu, Col::Vram, Col::Disk, Col::Pid];
+pub const NUMS: [Col; 7] = [Col::Cpu, Col::Ram, Col::Gpu, Col::Vram, Col::Disk, Col::Net, Col::Pid];
 
 impl Col {
     /// Index in `NUMS`; None for Name.
@@ -49,6 +50,7 @@ impl Col {
             Col::Gpu => "GPU",
             Col::Vram => "VRAM",
             Col::Disk => "Disk r / w",
+            Col::Net => "Network in / out",
         }
     }
 
@@ -61,6 +63,7 @@ impl Col {
             Col::Gpu => "gpu",
             Col::Vram => "vram",
             Col::Disk => "disk",
+            Col::Net => "net",
         }
     }
 

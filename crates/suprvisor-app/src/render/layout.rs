@@ -4,7 +4,7 @@ use windows::Win32::Graphics::Direct2D::Common::D2D_RECT_F;
 
 use super::*;
 use crate::settings::Settings;
-use crate::table::{Col, Row};
+use crate::table::{Col, NUMS, Row};
 
 /// Navigation pane width: icons only, or icons and labels.
 pub fn nav_width(open: bool) -> f32 {
@@ -54,7 +54,7 @@ pub fn hthumb(l: f32, r: f32, overflow: f32, hscroll: f32) -> Option<(f32, f32)>
 /// content width `fit`; past that, the columns after it slide right and overflow. To the left,
 /// the left column shrinks to its content, then Name (to NAME_MIN); the space they give first takes
 /// back the `overflow` (the columns after the separator slide back), then widens the right column.
-pub fn resize(start: [f32; 6], name: f32, left: Option<usize>, right: usize, d: f32, fit: [f32; 6], overflow: f32) -> ([f32; 6], f32) {
+pub fn resize(start: [f32; NUMS.len()], name: f32, left: Option<usize>, right: usize, d: f32, fit: [f32; NUMS.len()], overflow: f32) -> ([f32; NUMS.len()], f32) {
     // A column already narrower than its content does not jump to it.
     let room = |i: usize| (start[i] - fit[i].min(start[i])).max(0.0);
     let (mut w, mut n) = (start, name);
@@ -192,41 +192,41 @@ pub fn chevron_x(row: &Row, name_x0: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::table::{Col, NUMS};
+    use crate::table::Col;
 
     #[test]
     fn resize_moves_one_separator() {
-        let w = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0];
-        let fit = [40.0; 6];
+        let w = [72.0, 96.0, 64.0, 96.0, 128.0, 64.0, 64.0];
+        let fit = [40.0; 7];
         let r = |left, right, d, fit, overflow| super::resize(w, 400.0, left, right, d, fit, overflow);
         // CPU|Memory 20 right: CPU wider, Memory narrower, the rest still.
-        assert_eq!(r(Some(0), 1, 20.0, fit, 0.0).0, [92.0, 76.0, 64.0, 96.0, 128.0, 64.0]);
+        assert_eq!(r(Some(0), 1, 20.0, fit, 0.0).0, [92.0, 76.0, 64.0, 96.0, 128.0, 64.0, 64.0]);
         // Far right: Memory stops at its content width, CPU keeps growing: the rest overflows.
         assert_eq!(r(Some(0), 1, 500.0, fit, 0.0).0[..2], [572.0, 40.0]);
         // Name|CPU 30 left: CPU wider (Name gives the space), never Name under 120.
-        assert_eq!(r(None, 0, -30.0, fit, 0.0), ([102.0, 96.0, 64.0, 96.0, 128.0, 64.0], 370.0));
+        assert_eq!(r(None, 0, -30.0, fit, 0.0), ([102.0, 96.0, 64.0, 96.0, 128.0, 64.0, 64.0], 370.0));
         assert_eq!(r(None, 0, -1000.0, fit, 0.0).0[0], 352.0);
         // Name|CPU 1000 right: Name follows, CPU stops at its content.
-        assert_eq!(r(None, 0, 1000.0, fit, 0.0), ([40.0, 96.0, 64.0, 96.0, 128.0, 64.0], 1400.0));
-        // Disk|PID 100 left, Disk content 80: Disk shrinks to 80, then Name gives the other 52
+        assert_eq!(r(None, 0, 1000.0, fit, 0.0), ([40.0, 96.0, 64.0, 96.0, 128.0, 64.0, 64.0], 1400.0));
+        // Disk|Network 100 left, Disk content 80: Disk shrinks to 80, then Name gives the other 52
         // and the columns left of Disk slide.
-        let fit = [40.0, 40.0, 40.0, 40.0, 80.0, 40.0];
-        assert_eq!(r(Some(4), 5, -100.0, fit, 0.0), ([72.0, 96.0, 64.0, 96.0, 80.0, 164.0], 348.0));
-        // The same with 30 of overflow: the overflow goes first, PID grows by the other 70.
-        assert_eq!(r(Some(4), 5, -100.0, fit, 30.0).0[4..], [80.0, 134.0]);
+        let fit = [40.0, 40.0, 40.0, 40.0, 80.0, 40.0, 40.0];
+        assert_eq!(r(Some(4), 5, -100.0, fit, 0.0), ([72.0, 96.0, 64.0, 96.0, 80.0, 164.0, 64.0], 348.0));
+        // The same with 30 of overflow: the overflow goes first, Network grows by the other 70.
+        assert_eq!(r(Some(4), 5, -100.0, fit, 30.0).0[4..6], [80.0, 134.0]);
         // A column already under its content does not grow back: Name gives it all.
-        let fit = [40.0, 40.0, 40.0, 40.0, 200.0, 40.0];
-        assert_eq!(r(Some(4), 5, -100.0, fit, 0.0).0[4..], [128.0, 164.0]);
+        let fit = [40.0, 40.0, 40.0, 40.0, 200.0, 40.0, 40.0];
+        assert_eq!(r(Some(4), 5, -100.0, fit, 0.0).0[4..6], [128.0, 164.0]);
     }
 
     #[test]
     fn columns_follow_order_and_visibility() {
         let mut s = crate::settings::Settings::default();
-        s.order.swap(0, 5); // PID first, CPU last
+        s.order.swap(0, 6); // PID first, CPU last
         s.hidden[2] = true; // GPU
         let c = super::columns(48.0, 1000.0, &s, 0.0);
         let names: Vec<Col> = c.iter().map(|c| c.0).collect();
-        assert_eq!(names, [Col::Name, Col::Pid, Col::Ram, Col::Vram, Col::Disk, Col::Cpu]);
+        assert_eq!(names, [Col::Name, Col::Pid, Col::Ram, Col::Vram, Col::Disk, Col::Net, Col::Cpu]);
         assert_eq!(c.last().unwrap().2, 1000.0 - super::PAD - super::BAR, "Name fills: the last column ends at the edge");
         assert!(c.windows(2).all(|p| p[0].2 == p[1].1), "no gaps");
         assert_eq!(c[0].1, 48.0 + super::PAD);
@@ -236,7 +236,7 @@ mod tests {
         assert_eq!(c[0].2 - c[0].1, s.name_width);
         assert_eq!(c[0].1, 48.0 + super::PAD - 30.0);
         let over = super::overflow(48.0, 500.0, &s);
-        assert_eq!(over, 48.0 + super::PAD + s.name_width + 456.0 - (500.0 - super::PAD - super::BAR));
+        assert_eq!(over, 48.0 + super::PAD + s.name_width + 600.0 - (500.0 - super::PAD - super::BAR));
         assert!(super::hthumb(48.0, 488.0, over, 0.0).is_some());
         assert!(super::hthumb(48.0, 488.0, 0.0, 0.0).is_none());
     }

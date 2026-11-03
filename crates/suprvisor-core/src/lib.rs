@@ -12,6 +12,7 @@ mod collector;
 mod gpu;
 mod handles;
 mod io;
+mod net;
 mod procs;
 mod system;
 
@@ -36,6 +37,9 @@ pub struct Proc {
     /// Updated by [`Collector::scan_full`], and by [`Collector::refresh`] with `io`.
     pub io_read: u64,
     pub io_write: u64,
+    /// Network bytes per second, received and sent. 0 without admin.
+    pub net_recv: u64,
+    pub net_sent: u64,
     /// Busiest GPU engine used by this process, 0-100.
     pub gpu: f32,
     /// Committed dedicated VRAM in bytes.

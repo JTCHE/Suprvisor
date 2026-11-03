@@ -16,11 +16,13 @@ pub struct Values {
     pub vram: u64,
     pub read: u64,
     pub write: u64,
+    pub net_in: u64,
+    pub net_out: u64,
 }
 
 impl Values {
     pub(super) fn of(p: &Proc) -> Self {
-        Self { cpu: p.cpu, ram: p.private_ws, gpu: p.gpu, vram: p.vram, read: p.io_read, write: p.io_write }
+        Self { cpu: p.cpu, ram: p.private_ws, gpu: p.gpu, vram: p.vram, read: p.io_read, write: p.io_write, net_in: p.net_recv, net_out: p.net_sent }
     }
 
     pub(super) fn add(&mut self, o: &Values) {
@@ -30,6 +32,8 @@ impl Values {
         self.vram += o.vram;
         self.read += o.read;
         self.write += o.write;
+        self.net_in += o.net_in;
+        self.net_out += o.net_out;
     }
 }
 
@@ -153,6 +157,7 @@ impl Table {
             Col::Gpu => a.v.gpu.total_cmp(&b.v.gpu),
             Col::Vram => a.v.vram.cmp(&b.v.vram),
             Col::Disk => (a.v.read + a.v.write).cmp(&(b.v.read + b.v.write)),
+            Col::Net => (a.v.net_in + a.v.net_out).cmp(&(b.v.net_in + b.v.net_out)),
         };
         let o = if self.desc { o.reverse() } else { o };
         o.then_with(name).then(a.pid.cmp(&b.pid))

@@ -75,6 +75,11 @@ pub(super) fn gb(b: u64) -> f64 {
     b as f64 / (1u64 << 30) as f64
 }
 
+/// "in / out unit", or "0 unit" when both are 0.
+fn pair(first: String, second: String, unit: &str) -> String {
+    if first == "0" && second == "0" { format!("0 {unit}") } else { format!("{first} / {second} {unit}") }
+}
+
 /// The text of a numeric cell.
 pub fn cell(row: &Row, c: Col) -> String {
     let v = &row.v;
@@ -84,10 +89,8 @@ pub fn cell(row: &Row, c: Col) -> String {
         Col::Ram => bytes(v.ram),
         Col::Gpu => pct(v.gpu),
         Col::Vram => bytes(v.vram),
-        Col::Disk => match (mbs(v.read), mbs(v.write)) {
-            (r, w) if r == "0" && w == "0" => "0 MB/s".into(),
-            (r, w) => format!("{r} / {w} MB/s"),
-        },
+        Col::Disk => pair(mbs(v.read), mbs(v.write), "MB/s"),
+        Col::Net => pair(mbs(v.net_in * 8), mbs(v.net_out * 8), "Mbps"),
         Col::Pid => row.pid.map(|p| p.to_string()).unwrap_or_default(),
     }
 }
@@ -102,6 +105,7 @@ pub fn total(s: &System, c: Col) -> String {
         Col::Gpu => pct(s.gpu),
         Col::Vram => share(s.vram_used, s.vram_total),
         Col::Disk => format!("{} MB/s", mbs(s.disk_read + s.disk_write)),
+        Col::Net => format!("{} Mbps", mbs((s.net_recv + s.net_sent) * 8)),
     }
 }
 
