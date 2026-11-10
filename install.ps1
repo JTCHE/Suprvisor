@@ -12,9 +12,9 @@ $tasks = '\Suprvisor\'
 $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe'
 
 # Piped from the web (`irm ... | iex`): there is no script file and no repo next to it.
-# Fetch the repo to a stable folder, so the cargo cache survives re-runs, and run its copy.
+# Fetch the repo into %TEMP% and run its copy. Windows cleans %TEMP%; a re-run soon after reuses the cargo cache.
 if (-not $MyInvocation.MyCommand.Path) {
-    $source = Join-Path $env:LOCALAPPDATA 'suprvisor-source'
+    $source = Join-Path $env:TEMP 'suprvisor-source'
     $zip = Join-Path $env:TEMP 'suprvisor-main.zip'
     Invoke-WebRequest 'https://github.com/JTCHE/Suprvisor/archive/refs/heads/main.zip' -OutFile $zip
     Expand-Archive -Path $zip -DestinationPath $source -Force

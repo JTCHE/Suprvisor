@@ -24,7 +24,6 @@ irm https://raw.githubusercontent.com/JTCHE/Suprvisor/main/install.ps1 | iex
 Downloads the source, builds, copies to `C:\Program Files\Suprvisor`, registers two elevated
 tasks and redirects `taskmgr.exe` to Suprvisor (IFEO). One UAC click. While Suprvisor runs,
 Ctrl+Shift+Esc goes to its keyboard hook. When it does not run, the redirect starts it elevated.
-`uninstall.ps1` returns Windows to stock.
 
 <details>
 <summary>Manual</summary>
@@ -36,6 +35,16 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 </details>
+
+### Uninstall
+
+```powershell
+irm https://raw.githubusercontent.com/JTCHE/Suprvisor/main/uninstall.ps1 | iex
+```
+
+Returns Windows to stock: removes the `taskmgr.exe` redirect and the tasks, and sends
+`C:\Program Files\Suprvisor` to the Recycle Bin. Keeps your settings in `%APPDATA%\suprvisor`.
+One UAC click. From a clone: `powershell -ExecutionPolicy Bypass -File uninstall.ps1`.
 
 ## Use
 
