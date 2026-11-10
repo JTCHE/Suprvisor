@@ -14,7 +14,8 @@ $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution
 # file name, not only the path: iex inside a script reports the caller's path.
 # Save this script into %TEMP% and run that copy.
 if (-not $PSCommandPath -or (Split-Path -Leaf $PSCommandPath) -ne 'uninstall.ps1') {
-    $file = Join-Path $env:TEMP 'suprvisor-uninstall.ps1'
+    $folder = New-Item -ItemType Directory -Force (Join-Path $env:TEMP 'suprvisor-uninstall')
+    $file = Join-Path $folder 'uninstall.ps1'
     Invoke-WebRequest 'https://raw.githubusercontent.com/JTCHE/Suprvisor/main/uninstall.ps1' -OutFile $file
     & $file
     return
