@@ -10,9 +10,10 @@ $exe = Join-Path $dir 'suprvisor.exe'
 $tasks = '\Suprvisor\'
 $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe'
 
-# Piped from the web (`irm ... | iex`): there is no script file to relaunch elevated.
+# Piped from the web (`irm ... | iex`): there is no script file to relaunch elevated. Check the
+# file name, not only the path: iex inside a script reports the caller's path.
 # Save this script into %TEMP% and run that copy.
-if (-not $MyInvocation.MyCommand.Path) {
+if (-not $PSCommandPath -or (Split-Path -Leaf $PSCommandPath) -ne 'uninstall.ps1') {
     $file = Join-Path $env:TEMP 'suprvisor-uninstall.ps1'
     Invoke-WebRequest 'https://raw.githubusercontent.com/JTCHE/Suprvisor/main/uninstall.ps1' -OutFile $file
     & $file

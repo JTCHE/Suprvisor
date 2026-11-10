@@ -11,9 +11,10 @@ $exe = Join-Path $dir 'suprvisor.exe'
 $tasks = '\Suprvisor\'
 $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe'
 
-# Piped from the web (`irm ... | iex`): there is no script file and no repo next to it.
+# Piped from the web (`irm ... | iex`): there is no repo next to it. Check for a repo file,
+# not only for a script path: iex inside a script reports the caller's path.
 # Fetch the repo into %TEMP% and run its copy. Windows cleans %TEMP%; a re-run soon after reuses the cargo cache.
-if (-not $MyInvocation.MyCommand.Path) {
+if (-not $PSScriptRoot -or -not (Test-Path "$PSScriptRoot\Cargo.toml")) {
     $source = Join-Path $env:TEMP 'suprvisor-source'
     $zip = Join-Path $env:TEMP 'suprvisor-main.zip'
     Invoke-WebRequest 'https://github.com/JTCHE/Suprvisor/archive/refs/heads/main.zip' -OutFile $zip
