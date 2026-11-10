@@ -13,14 +13,29 @@ and VRAM per process.
 
 ## Install
 
+### Windows
+
+Needs [Rust](https://rustup.rs). In PowerShell:
+
 ```powershell
+irm https://raw.githubusercontent.com/JTCHE/Suprvisor/main/install.ps1 | iex
+```
+
+Downloads the source, builds, copies to `C:\Program Files\Suprvisor`, registers two elevated
+tasks and redirects `taskmgr.exe` to Suprvisor (IFEO). One UAC click. While Suprvisor runs,
+Ctrl+Shift+Esc goes to its keyboard hook. When it does not run, the redirect starts it elevated.
+`uninstall.ps1` returns Windows to stock.
+
+<details>
+<summary>Manual</summary>
+
+```powershell
+git clone https://github.com/JTCHE/Suprvisor
+cd Suprvisor
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-Builds, copies to `C:\Program Files\Suprvisor`, registers two elevated tasks and redirects
-`taskmgr.exe` to Suprvisor (IFEO). One UAC click. While Suprvisor runs, Ctrl+Shift+Esc goes to
-its keyboard hook. When it does not run, the redirect starts it elevated. `uninstall.ps1` returns
-Windows to stock.
+</details>
 
 ## Use
 

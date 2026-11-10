@@ -11,6 +11,17 @@ $exe = Join-Path $dir 'suprvisor.exe'
 $tasks = '\Suprvisor\'
 $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe'
 
+# Piped from the web (`irm ... | iex`): there is no script file and no repo next to it.
+# Fetch the repo to a stable folder, so the cargo cache survives re-runs, and run its copy.
+if (-not $MyInvocation.MyCommand.Path) {
+    $source = Join-Path $env:LOCALAPPDATA 'suprvisor-source'
+    $zip = Join-Path $env:TEMP 'suprvisor-main.zip'
+    Invoke-WebRequest 'https://github.com/JTCHE/Suprvisor/archive/refs/heads/main.zip' -OutFile $zip
+    Expand-Archive -Path $zip -DestinationPath $source -Force
+    & (Join-Path $source 'suprvisor-main\install.ps1')
+    return
+}
+
 if (-not $Elevated) {
     cargo build -p suprvisor-app --release --manifest-path "$PSScriptRoot\Cargo.toml"
     if ($LASTEXITCODE) { exit $LASTEXITCODE }
